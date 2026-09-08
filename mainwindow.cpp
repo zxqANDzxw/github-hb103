@@ -30,7 +30,6 @@ MainWindow::MainWindow(QWidget *parent) :
     // 2. 初始化 华北103
     m_protocol = new NorthChina103(this);
 
-    int gitlalala;
 
  //tcp连接成功后 关联执行
   /*  connect(m_tcp, &TcpClient::sigConnected, this, [=](){

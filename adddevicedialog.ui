@@ -48,7 +48,7 @@
       <item>
        <widget class="QLineEdit" name="lineEditName">
         <property name="text">
-         <string>193.100.100.230</string>
+         <string>192.168.124.67</string>
         </property>
        </widget>
       </item>
@@ -79,7 +79,7 @@
       <item>
        <widget class="QLineEdit" name="lineEditIp">
         <property name="text">
-         <string>193.100.100.230</string>
+         <string>192.168.124.67</string>
         </property>
        </widget>
       </item>

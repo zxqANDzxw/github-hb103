@@ -1,6 +1,7 @@
 #include "northchina103.h"
 #include <QDateTime>
 #include <QTimer>
+#include <QDebug>
 
 NorthChina103::NorthChina103(QObject *parent)
     : IProtocol(parent)
@@ -8,11 +9,27 @@ NorthChina103::NorthChina103(QObject *parent)
     , m_pollTimer(new QTimer(this))
 {
     // 二级数据轮询：默认1秒，超时自动组帧并请求发送
-    m_pollTimer->setInterval(1000);
+    m_pollTimer->setInterval(10000);
     connect(m_pollTimer, &QTimer::timeout, this, [=](){
         emit requestSend(buildFrame({{"type", "召唤二级数据"}, {"addr", 0x01}}));
     });
 }
+
+void NorthChina103::startPoll()
+{
+    if (m_pollTimer && !m_pollTimer->isActive()) {
+        m_pollTimer->start();
+    }
+}
+
+void NorthChina103::stopPoll()
+{
+    if (m_pollTimer && m_pollTimer->isActive()) {
+        m_pollTimer->stop();
+    }
+}
+
+
 
 NorthChina103::~NorthChina103()
 {
@@ -32,15 +49,22 @@ uchar NorthChina103::calcFixedFrameCS(uchar ctrl, uchar addr)
 QByteArray NorthChina103::cp56FromDateTime(const QDateTime &dt)
 {
     QByteArray bytes(7, Qt::Uninitialized);
-    quint16 ms = dt.time().msec() + dt.time().second() * 1000;
-    bytes[0] = ms & 0xFF;
-    bytes[1] = (ms >> 8) & 0xFF;
-    bytes[2] = dt.time().minute();
-    bytes[3] = dt.time().hour();
-    bytes[4] = dt.date().day();
-    bytes[5] = dt.date().month();
-    bytes[6] = dt.date().year() % 100;
-    return bytes;
+        quint16 ms = dt.time().msec() + dt.time().second() * 1000;
+        bytes[0] = ms & 0xFF;
+        bytes[1] = (ms >> 8) & 0xFF;
+        bytes[2] = dt.time().minute();
+
+        // 修复：小时 + 星期位（高3位）
+        int hour = dt.time().hour();
+        int weekDay = dt.date().dayOfWeek(); // Qt:1=周一 ~ 7=周日，和规约一致
+        uchar hourByte = hour & 0x1F;
+        hourByte |= (weekDay << 5) & 0xE0;
+        bytes[3] = hourByte;
+
+        bytes[4] = dt.date().day();
+        bytes[5] = dt.date().month();
+        bytes[6] = dt.date().year() % 100;
+        return bytes;
 }
 
 // CP56Time2a 解码：7字节 → QDateTime
@@ -127,6 +151,9 @@ QByteArray NorthChina103::buildFrame(const QVariantMap &param)
     QString type = param.value("type").toString();
     uchar addr = (uchar)param.value("addr", 0x01).toInt();
 
+    qDebug() << "当前type:" << type;
+
+
     // ---------- 固定长度帧 ----------
     if (type == "复位通信单元") {
         return buildFixedFrame(0x40, addr);
@@ -155,7 +182,7 @@ QByteArray NorthChina103::buildFrame(const QVariantMap &param)
     else if (type == "信号复归") {
         return QByteArray::fromHex("10 68 01 69 16");
     }
-    else if (type == "召唤录波列表_固定帧") {
+    else if (type == "召唤录波列表") {
         uchar ctrl = 0x08;
         if (m_fcb) ctrl |= 0x20;
         m_fcb = !m_fcb;
@@ -203,9 +230,10 @@ QByteArray NorthChina103::buildVariableFrame(const QByteArray &asduBody, uchar a
 {
     QByteArray frame;
     frame.append((char)0x68);
-    uchar len = 2 + asduBody.size(); // 控制域 + 地址域 + ASDU体
-    frame.append((char)len);
-    frame.append((char)len);
+    // 修复后（正确：小端序，分高低字节）
+    quint16 totalLen = 2 + asduBody.size();  // 控制域1 + 地址域1 + ASDU体
+    frame.append((char)(totalLen & 0xFF));       // 低8位
+    frame.append((char)((totalLen >> 8) & 0xFF));// 高8位
     frame.append((char)0x68);
 
     // 控制域：主站发送，FCB位复用全局逻辑
@@ -392,16 +420,4 @@ void NorthChina103::clearRecvBuf()
     m_recvBuf.clear();
 }
 
-void NorthChina103::startPoll()
-{
-    if (m_pollTimer && !m_pollTimer->isActive()) {
-        m_pollTimer->start();
-    }
-}
 
-void NorthChina103::stopPoll()
-{
-    if (m_pollTimer && m_pollTimer->isActive()) {
-        m_pollTimer->stop();
-    }
-}

@@ -39,22 +39,21 @@ WaveManageDialog::~WaveManageDialog()
 // 按钮点击：直接复用规约层能力
 void WaveManageDialog::on_pushButton_clicked()
 {
-    // 组装参数
     QVariantMap param;
-    param["type"] = "召唤录波列表";
-    param["addr"] = 0x01;
+        param["type"] = "召唤录波列表_按时间";
+        param["addr"] = 0x01;
+        // 补上两个必填时间参数，从界面控件取值
+        param["startTime"] = ui->dtStart->dateTime();
+        param["endTime"] = ui->dtEnd->dateTime();
 
-    // 直接调用主窗口那个m_protocol的buildFrame
-    QByteArray frame = m_proto->buildFrame(param);
-    if(frame.isEmpty())
-    {
-        m_logEdit->appendPlainText("【错误】构建录波召唤帧失败");
-        return;
-    }
-
-    // 复用主窗口的TCP连接发送报文
-    m_tcp->sendRawData(frame);
-    m_logEdit->appendPlainText("【发送】召唤录波文件列表");
+        QByteArray frame = m_proto->buildFrame(param);
+        if(frame.isEmpty()) {
+            m_logEdit->appendPlainText("【错误】构建录波召唤帧失败");
+            return;
+        }
+        qDebug() << "录波帧内容:" << frame.toHex(' ').toUpper();
+        m_tcp->sendRawData(frame);
+        m_logEdit->appendPlainText("【发送】召唤录波文件列表");
 }
 
 // 刷新录波列表表格
