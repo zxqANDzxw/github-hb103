@@ -1,0 +1,23 @@
+# Qt编译输出文件夹，所有build-开头文件夹全部忽略
+build-*/
+
+# Qt本地用户配置（本机Qt路径、窗口布局，不要提交）
+*.pro.user
+*.pro.user.*
+
+# 编译生成的中间文件
+*.o
+*.obj
+*.moc
+*.stash
+*.log
+
+# 程序二进制
+*.exe
+*.dll
+*.so
+*.a
+
+# 其他临时文件
+*.tmp
+*.bak
