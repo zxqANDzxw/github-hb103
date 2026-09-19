@@ -23,6 +23,6 @@ void printRecvLog(QByteArray recvData, QPlainTextEdit* logWidget)
 {
     if(!logWidget) return;
     QString hex = recvData.toHex(' ').toUpper();
-    QString log = QString("%1 接收是这里么？？：%2").arg(getTimeStr(), hex);
+    QString log = QString("%1 接收：%2").arg(getTimeStr(), hex);
     logWidget->appendPlainText(log);
 }

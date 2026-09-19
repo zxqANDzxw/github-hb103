@@ -201,7 +201,7 @@ QByteArray NorthChina103::buildFrame(const QVariantMap &param)
         asduBody.append((char)0x0F);   // TYP=0FH → ASDU15
         asduBody.append((char)0x81);   // VSQ=81H
         asduBody.append((char)0x00);   // COT
-        asduBody.append((char)0x00);   // ASDU地址
+        asduBody.append((char)0x01);   // ASDU地址
         asduBody.append((char)0xFF);   // FUN
         asduBody.append((char)0x00);   // INF
         asduBody.append(cp56FromDateTime(startTime));
@@ -374,11 +374,15 @@ void NorthChina103::feedRawData(const QByteArray &data)
 void NorthChina103::callWaveFileList(const QDateTime &startTime, const QDateTime &endTime)
 {
     m_tempFileList.clear();
-    emit requestSend(buildFrame({
-        {"type", "召唤录波列表_按时间"},
-        {"startTime", startTime},
-        {"endTime", endTime}
-    }));
+    QVariantMap param;
+    param["type"] = "召唤录波列表_按时间";
+    param["addr"] = 0x01;//这里没有用到这个参数
+    param["startTime"] = startTime;
+    param["endTime"] = endTime;
+
+    QByteArray frame = buildFrame(param);
+    if (!frame.isEmpty()) { emit requestSend(frame); }
+
 }
 
 // 解析ASDU12录波列表
