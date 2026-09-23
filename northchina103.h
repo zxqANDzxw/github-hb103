@@ -54,6 +54,14 @@ private:
     QByteArray m_recvBuf;        // 跨包接收缓存
     QTimer *m_pollTimer;         // 二级数据轮询定时器
     QList<WaveFileInfo> m_tempFileList; // 录波列表多包累计缓存
+
+    // 录波文件列表多帧传输
+    QList<WaveFileInfo> m_waveListCache;   // 多帧临时缓存
+    QTimer *m_waveTransTimer;              // 传输超时定时器
+    bool m_isWaveTransmitting;             // 传输状态标记
+
+signals:
+    void waveListReceived(const QList<WaveFileInfo> &list);
 };
 
 #endif // NORTHCHINA103_H

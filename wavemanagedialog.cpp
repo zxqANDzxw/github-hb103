@@ -39,6 +39,8 @@ WaveManageDialog::~WaveManageDialog()
 // 按钮点击：直接复用规约层能力
 void WaveManageDialog::on_pushButton_clicked()
 {
+
+    m_proto->callWaveFileList(ui->dtStart->dateTime(), ui->dtEnd->dateTime());
     QVariantMap param;
         param["type"] = "召唤录波列表_按时间";
         param["addr"] = 0x01;

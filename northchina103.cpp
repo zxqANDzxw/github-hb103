@@ -13,6 +13,19 @@ NorthChina103::NorthChina103(QObject *parent)
     connect(m_pollTimer, &QTimer::timeout, this, [=](){
         emit requestSend(buildFrame({{"type", "召唤二级数据"}, {"addr", 0x01}}));
     });
+
+
+    m_waveTransTimer = new QTimer(this);
+        m_waveTransTimer->setSingleShot(true);
+        connect(m_waveTransTimer, &QTimer::timeout, this, [=](){
+            // 超时兜底：清空缓存，重置状态，上报错误
+            m_waveListCache.clear();
+            m_isWaveTransmitting = false;
+            emit waveListError("文件列表传输超时");
+        });
+
+
+
 }
 
 void NorthChina103::startPoll()
@@ -353,12 +366,31 @@ void NorthChina103::feedRawData(const QByteArray &data)
 
         uchar asduType = frame[6];
 
-        // ASDU12 = 录波文件列表
-        if (asduType == 0x0C) {
+        // ASDU16 = 录波文件列表
+        if (asduType == 0x10) {
             QList<WaveFileInfo> list = parseWaveListAsdu(frame);
-            if (!list.isEmpty()) {
-                emit waveListReceived(list);
-            }
+
+            // 2. 追加到全局缓存
+            m_waveListCache.append(list);
+
+            // 3. 读取控制域，判断ACD位
+                uchar ctrl = static_cast<uchar>(frame.at(4));
+                bool hasMoreFrame = (ctrl & 0x20) != 0; // bit5 = ACD位
+
+                if (!hasMoreFrame) {
+                        // 最后一帧：发出完整列表信号，清空状态
+                        emit waveListReceived(m_waveListCache);
+                        m_waveListCache.clear();
+                        m_isWaveTransmitting = false;
+                        m_waveTransTimer->stop();
+                    } else {
+                        // 还有后续：发请求一级数据，取下一帧
+                        requestLevel1Data();
+                        // 重置超时定时器（3秒没收到下一帧就算超时）
+                        m_waveTransTimer->start(3000);
+                    }
+
+
         }
 
         // 后续扩展其他ASDU...
@@ -373,6 +405,11 @@ void NorthChina103::feedRawData(const QByteArray &data)
 // 召唤录波文件列表（对外接口）
 void NorthChina103::callWaveFileList(const QDateTime &startTime, const QDateTime &endTime)
 {
+    // 重置传输状态，清空历史缓存
+    m_waveListCache.clear();
+    m_isWaveTransmitting = true;
+    m_waveTransTimer->start(5000); // 首帧超时5秒
+
     m_tempFileList.clear();
     QVariantMap param;
     param["type"] = "召唤录波列表_按时间";
@@ -385,24 +422,55 @@ void NorthChina103::callWaveFileList(const QDateTime &startTime, const QDateTime
 
 }
 
-// 解析ASDU12录波列表
+// 解析ASDU16录波列表
 QList<WaveFileInfo> NorthChina103::parseWaveListAsdu(const QByteArray &frame)
 {
     QList<WaveFileInfo> result;
-    if (frame.size() < 23) return result; // 帧头(6) + 信息头(10) + 7字节时间 = 23
+        // 最小帧长度校验：链路层6 + ASDU头部20 + 至少1个文件49 = 75
+        if (frame.size() < 75)
+            return result;
 
-    WaveFileInfo info;
-    int infoStart = 16; // 信息体起始偏移，按实际规约调整
+        // ========== 第一步：跳过链路层，定位到ASDU开始 ==========
+        int pos = 6; // 68 L L 68 控制域 地址域 共6字节
 
-    // 故障时间
-    info.faultTime = cp56ToDateTime(frame.mid(infoStart, 7)).toString("yyyy-MM-dd HH:mm:ss.zzz");
-    // 文件名（40字节，去尾部填充）
-    QByteArray nameBytes = frame.mid(infoStart + 7, 40);
-    info.fileName = QString::fromLatin1(nameBytes).remove(QChar('\0'));
-    info.fileSize = 0;
+        // ========== 第二步：解析ASDU固定头部 ==========
+        // 跳过 TYP(1) + VSQ(1) + COT(1) + ASDU地址(1) = 4字节
+        pos += 4;
 
-    result.append(info);
-    return result;
+        // 读取本帧文件总数（2字节小端）
+        quint16 fileCount = static_cast<quint8>(frame.at(pos))
+                          | (static_cast<quint8>(frame.at(pos+1)) << 8);
+        pos += 2;
+
+        // 跳过 起始时间(7) + 终止时间(7) = 14字节
+        pos += 14;
+
+        // ========== 第三步：循环解析每个文件条目 ==========
+        for (quint16 i = 0; i < fileCount; ++i) {
+            if (pos + 49 > frame.size())
+                break; // 防越界
+
+            WaveFileInfo info;
+
+            // 1. 录波装置地址（2字节小端）
+            info.deviceAddr = static_cast<quint8>(frame.at(pos))
+                            | (static_cast<quint8>(frame.at(pos+1)) << 8);
+            pos += 2;
+
+            // 2. 文件名：固定40字节，去掉末尾补的0
+            QByteArray nameRaw = frame.mid(pos, 40);
+            info.fileName = QString::fromLatin1(nameRaw).remove(QChar('\0'));
+            pos += 40;
+
+            // 3. 故障时间（7字节CP56Time2a）
+            info.faultTime = cp56ToDateTime(frame.mid(pos, 7));
+            pos += 7;
+
+            info.fileSize = 0; // 列表帧不带文件大小，下载时返回
+            result.append(info);
+        }
+
+        return result;
 }
 
 // ==============================
