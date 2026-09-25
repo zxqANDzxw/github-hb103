@@ -7,14 +7,13 @@
 #include "ProtocolDefine.h"
 #include <QDateTime>
 // 录波文件信息结构体，所有规约通用
-struct WaveFileInfo
-{
-    QString fileName;    // 录波文件名
-    quint32 fileSize;    // 文件大小（字节）
-    QString faultTime;// 文件生成时间
-    quint8 fileType;     // 文件类型（故障录波、扰动录波等）
+struct WaveFileInfo {
+    QDateTime faultTime;
+    QString fileName;
+    quint32 fileSize;
+    quint16 deviceAddr;
 };
-
+Q_DECLARE_METATYPE(WaveFileInfo)
 
 
 class IProtocol : public QObject
@@ -44,6 +43,8 @@ public:
     virtual void setRecvBuf(const QByteArray &buf) = 0;
     virtual void clearRecvBuf() = 0;
     virtual ProtocolParseResult parseFrame(const QByteArray& frame) = 0;
+    // 补充：录波文件列表召唤接口（纯虚函数，子类实现）
+    virtual void callWaveFileList(const QDateTime& startTime, const QDateTime& endTime) = 0;
 
 
 signals:
@@ -56,6 +57,8 @@ signals:
     void waveListReceived(const QList<WaveFileInfo>& waveList);
     // 录波下载进度更新信号
     void waveDownloadProgress(quint32 recvSize, quint32 totalSize);
+
+    void waveListError(const QString &msg);
 
 };
 

@@ -7,6 +7,8 @@ NorthChina103::NorthChina103(QObject *parent)
     : IProtocol(parent)
     , m_fcb(false)
     , m_pollTimer(new QTimer(this))
+    , m_isWaveTransmitting(false)
+    , m_waveTransTimer(nullptr)
 {
     // 二级数据轮询：默认1秒，超时自动组帧并请求发送
     m_pollTimer->setInterval(10000);
@@ -22,6 +24,7 @@ NorthChina103::NorthChina103(QObject *parent)
             m_waveListCache.clear();
             m_isWaveTransmitting = false;
             emit waveListError("文件列表传输超时");
+            m_pollTimer->start(); // 恢复二级数据轮询
         });
 
 
@@ -249,8 +252,8 @@ QByteArray NorthChina103::buildVariableFrame(const QByteArray &asduBody, uchar a
     frame.append((char)((totalLen >> 8) & 0xFF));// 高8位
     frame.append((char)0x68);
 
-    // 控制域：主站发送，FCB位复用全局逻辑
-    uchar ctrl = 0x40 | 0x01;
+    // 控制域：应用层可变帧标准格式 PRM=1 + FCV=1 + 功能码3(请求/响应)
+    uchar ctrl = 0x53;
     if (m_fcb) ctrl |= 0x20;
     m_fcb = !m_fcb;
     frame.append((char)ctrl);
@@ -379,13 +382,14 @@ void NorthChina103::feedRawData(const QByteArray &data)
 
                 if (!hasMoreFrame) {
                         // 最后一帧：发出完整列表信号，清空状态
+                     qDebug() << "[调试] 录波列表传输完成，总条目数:" << m_waveListCache.size(); // 加这行
                         emit waveListReceived(m_waveListCache);
                         m_waveListCache.clear();
                         m_isWaveTransmitting = false;
                         m_waveTransTimer->stop();
+                        m_pollTimer->start(); // 恢复二级数据轮询
+
                     } else {
-                        // 还有后续：发请求一级数据，取下一帧
-                        requestLevel1Data();
                         // 重置超时定时器（3秒没收到下一帧就算超时）
                         m_waveTransTimer->start(3000);
                     }
@@ -405,6 +409,9 @@ void NorthChina103::feedRawData(const QByteArray &data)
 // 召唤录波文件列表（对外接口）
 void NorthChina103::callWaveFileList(const QDateTime &startTime, const QDateTime &endTime)
 {
+    // 暂停二级数据轮询，避免FCB位冲突打断录波传输
+    m_pollTimer->stop();
+
     // 重置传输状态，清空历史缓存
     m_waveListCache.clear();
     m_isWaveTransmitting = true;
@@ -472,6 +479,11 @@ QList<WaveFileInfo> NorthChina103::parseWaveListAsdu(const QByteArray &frame)
 
         return result;
 }
+void NorthChina103::requestLevel1Data()
+{
+    emit requestSend(buildFrame({{"type","召唤一级数据"},{"addr",0x01}}));
+}
+
 
 // ==============================
 // 缓存与轮询接口

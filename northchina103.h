@@ -31,7 +31,7 @@ public:
 
     // ========== 对外业务接口 ==========
     // 按时间范围召唤录波文件列表
-    void callWaveFileList(const QDateTime& startTime, const QDateTime& endTime);
+    void callWaveFileList(const QDateTime& startTime, const QDateTime& endTime)override;
 
 private:
     // ========== 内部工具函数 ==========
@@ -59,6 +59,9 @@ private:
     QList<WaveFileInfo> m_waveListCache;   // 多帧临时缓存
     QTimer *m_waveTransTimer;              // 传输超时定时器
     bool m_isWaveTransmitting;             // 传输状态标记
+
+    // 补充：请求一级用户数据（多帧续传用）
+    void requestLevel1Data();
 
 signals:
     void waveListReceived(const QList<WaveFileInfo> &list);
