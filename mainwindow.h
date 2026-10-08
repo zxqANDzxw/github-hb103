@@ -8,6 +8,7 @@
 #include "iprotocol.h"
 #include "tcpclient.h"
 #include "northchina103.h"
+#include "wavemanagedialog.h"
 
 enum InitStep {
     Init_Idle,
@@ -45,6 +46,8 @@ private:
 
     // 规约
     IProtocol *m_protocol;
+
+    WaveManageDialog *m_waveDialog; // 录波对话框长效指针
 
     // 日志
     //MsgLogger *m_logger;

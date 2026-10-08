@@ -30,6 +30,10 @@ private slots:
     // 新增：接收规约层的录波列表信号
     void onWaveListReceived(const QList<WaveFileInfo>& waveList);
 
+    void onDownloadFile(const QString &fileName, int row);
+    void onAnalyzeFile(const QString &fileName, int row);
+    void onDeleteFile(const QString &fileName, int row);
+
 private:
     Ui::WaveManageDialog *ui;
     // 保存主窗口传入的指针，直接复用

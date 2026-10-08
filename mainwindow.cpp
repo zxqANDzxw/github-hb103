@@ -31,6 +31,11 @@ MainWindow::MainWindow(QWidget *parent) :
     m_protocol = new NorthChina103(this);
 
 
+    // 初始化录波对话框：非模态、父窗口绑定、只创建一次
+        m_waveDialog = new WaveManageDialog(this, m_tcp, m_protocol, ui->plainTextEdit);
+        m_waveDialog->setAttribute(Qt::WA_DeleteOnClose, false); // 关闭不销毁，反复复用
+
+
  //tcp连接成功后 关联执行
   /*  connect(m_tcp, &TcpClient::sigConnected, this, [=](){
     ui->plainTextEdit->appendPlainText("==== TCP设备链路建立成功 ====");
@@ -55,65 +60,6 @@ MainWindow::MainWindow(QWidget *parent) :
     });
 
 
-  /*  connect(m_tcp, &TcpClient::sigRecvRawData, this, [=](const QByteArray &data)
-    {
-        // 1. 将上一个数据包尾部不完整数据 追加新数据，拼接完整数据流
-        QByteArray buf = m_protocol->getRecvBuf();
-        buf.append(data);
-
-        int usedBytes = 0;
-        // 2. 解析全部完整帧 frames里包含拆解好的多帧数据 包含长帧 和 固定帧。
-        //同时把裁剪掉buf中已经用过的数据，做成新的newbuf
-        QList<QByteArray> frames = m_protocol->splitRawFrameWithCache(buf, usedBytes);
-        QByteArray newBuf = buf.mid(usedBytes);
-
-        m_protocol->setRecvBuf(newBuf);//把没用完的数据帧回填给northChina103对象。
-
-        // 防溢出保护
-        if(m_protocol->getRecvBuf().size() > 1024)
-        {
-            m_protocol->clearRecvBuf();
-            qDebug() << "接收缓存超限，清空脏数据";
-        }
-
-        // 处理frames当中的数据帧
-        foreach (auto frame, frames)
-        {
-            printRecvLog(frame, ui->plainTextEdit);
-
-            bool acd = false;
-            if (frame.size() == 5 && (uchar)frame[0] == 0x10 && (uchar)frame[4] == 0x16) {
-                uchar control = frame[1];
-                acd = (control & 0x20) != 0;
-            }
-            if(frame.size() >= 5 && (uchar)frame[0] == 0x68 && (uchar)frame[3] == 0x68) {
-                uchar control = frame[4];
-                acd = (control & 0x20) != 0;
-            }
-
-            if (acd) {
-                QByteArray f = m_protocol->buildFrame({{"type","召唤一级数据"},{"addr",1}});
-                m_tcp->sendRawData(f);
-
-               // 【发送】召唤一级数据
-               printSendLog(f,ui->plainTextEdit);
-            }
-        }
-    });
-
-        // 定时 1秒 发一次召唤二级数据
-        QTimer *timerPoll = new QTimer(this);
-        connect(timerPoll, &QTimer::timeout, this, [=](){
-        if (!m_tcp->isConnected()) return;
-
-        // 定时发二级数据
-        QByteArray f = m_protocol->buildFrame({{"type","召唤二级数据"},{"addr",1}});
-        m_tcp->sendRawData(f);
-        printSendLog(f,ui->plainTextEdit);
-
-    });
-    timerPoll->start(600000); // 1秒一次
-    */
 }
 
 
@@ -307,12 +253,10 @@ void MainWindow::on_treeWidget_customContextMenuRequested(const QPoint &pos)
            }
            else if(cmd=="录波操作"){
 
-
-               WaveManageDialog WaveDialog(this,m_tcp,m_protocol,ui->plainTextEdit);
-
-
-               // 4. 用户点了确定，就更新设备信息
-               if (WaveDialog.exec() == QDialog::Accepted){}
+               WaveManageDialog *dlg = new WaveManageDialog(this, m_tcp, m_protocol, ui->plainTextEdit);
+                   dlg->setAttribute(Qt::WA_DeleteOnClose);  // 关闭窗口自动销毁内存
+                   dlg->setWindowModality(Qt::NonModal);    // 显式指定非模态
+                   dlg->show();
 
            }
            else if(cmd == "编辑设备"){

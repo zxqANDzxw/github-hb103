@@ -45,6 +45,7 @@ public:
     virtual ProtocolParseResult parseFrame(const QByteArray& frame) = 0;
     // 补充：录波文件列表召唤接口（纯虚函数，子类实现）
     virtual void callWaveFileList(const QDateTime& startTime, const QDateTime& endTime) = 0;
+    virtual void downloadWaveFile(const QString &fileName) = 0;
 
 
 signals:
@@ -55,11 +56,16 @@ signals:
     void sigOneFrameReady(const QByteArray& frame, MsgDirection dir);
     // 解析到录波列表时发出信号，界面层连接此信号刷新表格
     void waveListReceived(const QList<WaveFileInfo>& waveList);
-    // 录波下载进度更新信号
-    void waveDownloadProgress(quint32 recvSize, quint32 totalSize);
+
 
     void waveListError(const QString &msg);
-
+    // 录波下载进度更新信号
+    void waveDownloadProgress(quint32 recvSize, quint32 totalSize);
+    void waveDownloadFinished(const QString &fileName,
+                              const QByteArray &hdr,
+                              const QByteArray &cfg,
+                              const QByteArray &dat);
+    void waveDownloadError(const QString &msg);
 };
 
 #endif // IPROTOCOL_H
