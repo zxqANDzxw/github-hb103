@@ -6,6 +6,7 @@
 #include "northchina103.h"
 #include <QPlainTextEdit>
 #include <QDateTime>
+#include <QDir>
 
 WaveManageDialog::WaveManageDialog(QWidget *parent,TcpClient *tcp,IProtocol *proto,QPlainTextEdit *logEdit) :
     QDialog(parent),
@@ -35,9 +36,77 @@ WaveManageDialog::WaveManageDialog(QWidget *parent,TcpClient *tcp,IProtocol *pro
         connect(m_proto, &IProtocol::waveListError, this, [=](const QString &msg)
         {m_logEdit->appendPlainText(QString("【错误】%1").arg(msg));});
 
-        // 连接信号 + 打印连接结果
-            bool ok = connect(m_proto, &IProtocol::waveListReceived, this, &WaveManageDialog::onWaveListReceived);
-            qDebug() << "[对话框] 信号连接结果：" << ok;
+
+        // 3. 下载进度
+        connect(m_proto, &IProtocol::waveDownloadProgress, this, [=](quint32 recv, quint32 total){
+            if (total > 0) {
+                m_logEdit->appendPlainText(QString("【下载进度】%1 / %2 字节").arg(recv).arg(total));
+            } else {
+                m_logEdit->appendPlainText(QString("【下载进度】已接收 %1 字节").arg(recv));
+            }
+        });
+
+            connect(m_proto, &IProtocol::waveDownloadFinished,
+                    this, [=](const QString &name, const QByteArray &hdr, const QByteArray &cfg, const QByteArray &dat){
+                m_logEdit->appendPlainText(QString("【下载完成】%1，总数据 %2 字节").arg(name).arg(hdr.size()+cfg.size()+dat.size()));
+
+                // 更新表格样式（原有逻辑保留）
+                if (m_currentDownloadRow >= 0) {
+                    QTableWidgetItem *item = ui->tableWidget->item(m_currentDownloadRow, 1);
+                    if (item) {
+                        item->setForeground(QBrush(Qt::darkGreen));
+                        QFont font = item->font();
+                        font.setBold(false);
+                        item->setFont(font);
+                        item->setData(Qt::UserRole, true);
+                    }
+                    // 恢复按钮状态
+                    QWidget *btnWidget = qobject_cast<QWidget*>(ui->tableWidget->cellWidget(m_currentDownloadRow, 2));
+                    if (btnWidget) {
+                        QPushButton *btn = btnWidget->findChild<QPushButton*>("btnDownload");
+                        if (btn) {
+                            btn->setEnabled(true);
+                            btn->setText("已下载");
+                        }
+                    }
+                }
+
+                // ========== 文件保存逻辑（带错误检测） ==========
+                QString saveDir = QCoreApplication::applicationDirPath() + "/wave_files";
+                QDir dir;
+                if (!dir.exists(saveDir)) {
+                    bool mkOk = dir.mkpath(saveDir);
+                    if (!mkOk) {
+                        m_logEdit->appendPlainText(QString("【保存失败】无法创建目录：%1").arg(saveDir));
+                        m_currentDownloadRow = -1;
+                        return;
+                    }
+                    m_logEdit->appendPlainText(QString("【保存】自动创建目录：%1").arg(saveDir));
+                }
+
+                // 通用保存函数
+                auto saveFile = [&](const QString &suffix, const QByteArray &data) -> bool {
+                    QString fullPath = saveDir + "/" + name + suffix;
+                    QFile file(fullPath);
+                    if (!file.open(QIODevice::WriteOnly)) {
+                        m_logEdit->appendPlainText(QString("【保存失败】%1 写入失败：%2").arg(fullPath, file.errorString()));
+                        return false;
+                    }
+                    file.write(data);
+                    file.close();
+                    return true;
+                };
+
+                bool hdrOk = saveFile(".hdr", hdr);
+                bool cfgOk = saveFile(".cfg", cfg);
+                bool datOk = saveFile(".dat", dat);
+
+                if (hdrOk && cfgOk && datOk) {
+                    m_logEdit->appendPlainText("【保存成功】文件已保存到 wave_files 目录");
+                }
+
+                m_currentDownloadRow = -1;
+            });
 
 
 

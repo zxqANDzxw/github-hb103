@@ -29,7 +29,7 @@ public:
     ProtocolParseResult parseFrame(const QByteArray& frame) override;
     QByteArray buildFrame(const QVariantMap& param) override;
 
-    void downloadWaveFile(const QString &fileName) override;
+    void downloadWaveFile(const QString &fileName,quint32 startPos = 0) override;
     // ========== 对外业务接口 ==========
     // 按时间范围召唤录波文件列表
     void callWaveFileList(const QDateTime& startTime, const QDateTime& endTime)override;
@@ -66,12 +66,12 @@ private:
 
     // ========== 录波文件下载 ==========
         QString m_downloadFileName;    // 当前下载的文件名
-        QByteArray m_fileDataCache;    // 文件数据总缓存
+       QByteArray m_filePackageCache; // 完整文件包缓存
         bool m_isFileDownloading;      // 下载状态标记
         QTimer *m_fileDownloadTimer;   // 下载超时定时器
 
-        // 解析完整文件包，拆分出三个COMTRADE文件
-        bool parseComtradePackage(const QByteArray &package,
+        // 解析完整COMTRADE文件包
+        bool parseComtradePackage(const QByteArray &pkg,
                                   QByteArray &outHdr,
                                   QByteArray &outCfg,
                                   QByteArray &outDat);

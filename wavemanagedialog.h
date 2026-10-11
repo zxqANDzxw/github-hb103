@@ -37,6 +37,7 @@ private slots:
 private:
     Ui::WaveManageDialog *ui;
     // 保存主窗口传入的指针，直接复用
+    int m_currentDownloadRow = -1; // 当前下载的行号，-1表示空闲
     TcpClient *m_tcp;
     IProtocol *m_proto;
     QPlainTextEdit *m_logEdit;

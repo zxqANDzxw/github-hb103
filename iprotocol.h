@@ -45,7 +45,7 @@ public:
     virtual ProtocolParseResult parseFrame(const QByteArray& frame) = 0;
     // 补充：录波文件列表召唤接口（纯虚函数，子类实现）
     virtual void callWaveFileList(const QDateTime& startTime, const QDateTime& endTime) = 0;
-    virtual void downloadWaveFile(const QString &fileName) = 0;
+    virtual void downloadWaveFile(const QString &fileName, quint32 startPos = 0) = 0;
 
 
 signals:

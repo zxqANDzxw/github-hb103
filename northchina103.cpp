@@ -9,8 +9,8 @@ NorthChina103::NorthChina103(QObject *parent)
     , m_pollTimer(new QTimer(this))
     , m_waveTransTimer(nullptr)
     , m_isWaveTransmitting(false)
-    , m_fileDownloadTimer(nullptr)
     , m_isFileDownloading(false)
+    , m_fileDownloadTimer(nullptr)
 
 {
     // 二级数据轮询：默认1秒，超时自动组帧并请求发送
@@ -34,7 +34,7 @@ NorthChina103::NorthChina103(QObject *parent)
             m_fileDownloadTimer = new QTimer(this);
             m_fileDownloadTimer->setSingleShot(true);
             connect(m_fileDownloadTimer, &QTimer::timeout, this, [=](){
-                m_fileDataCache.clear();
+               m_filePackageCache.clear();
                 m_isFileDownloading = false;
                 emit waveDownloadError("录波文件下载超时");
                 m_pollTimer->start(); // 恢复轮询
@@ -248,43 +248,44 @@ QByteArray NorthChina103::buildFrame(const QVariantMap &param)
     return QByteArray();
 }
 
-void NorthChina103::downloadWaveFile(const QString &fileName)
+void NorthChina103::downloadWaveFile(const QString &fileName, quint32 startPos)
 {
     // 暂停二级轮询，避免FCB冲突
         m_pollTimer->stop();
 
         // 重置下载状态
         m_downloadFileName = fileName;
-        m_fileDataCache.clear();
+        m_filePackageCache.clear();
         m_isFileDownloading = true;
         m_fileDownloadTimer->start(8000); // 首帧超时8秒
 
         // ========== 组 ASDU13 报文 ==========
-        QByteArray asduBody;
-        asduBody.append((char)0x0D);   // TYP=0DH → ASDU13
-        asduBody.append((char)0x81);   // VSQ=81H，单个信息体
-        asduBody.append((char)0x00);   // COT 未用
-        asduBody.append((char)0x01);   // ASDU地址
-        asduBody.append((char)0xFF);   // FUN 功能类型
-        asduBody.append((char)0x00);   // INF 信息序号
+        QByteArray asdu;
 
-        // 文件名：固定40字节，未使用补0
-        QByteArray nameBytes = fileName.toLatin1();
-        nameBytes.resize(40, '\0');
-        asduBody.append(nameBytes);
+            asdu.append(char(0x0D));  // 1.TYP 类型标识
+            asdu.append(char(0x81));  // 2.VSQ 单个信息体
+            asdu.append(char(0x00));  // 3.COT 传送原因
+            asdu.append(char(0x01));  // 4.ASDU地址
+            asdu.append(char(0xFF));  // 5.FUN 功能类型
+            asdu.append(char(0x00));  // 6.INF 信息序号
 
-        // 起始传输位置：4字节小端，首次从0开始
-        quint32 startPos = 0;
-        asduBody.append((char)(startPos & 0xFF));
-        asduBody.append((char)((startPos >> 8) & 0xFF));
-        asduBody.append((char)((startPos >> 16) & 0xFF));
-        asduBody.append((char)((startPos >> 24) & 0xFF));
+            // 7.文件名：固定40字节，不足补0
+                QByteArray nameBytes = fileName.toLatin1();
+                nameBytes.resize(40);
+                nameBytes.fill('\0');
+                asdu.append(nameBytes);
 
-        // 封装成可变帧并发送
-        QByteArray frame = buildVariableFrame(asduBody, 0x01);
-        if (!frame.isEmpty()) {
-            emit requestSend(frame);
-        }
+                // 8.起始传输位置：4字节 小端序
+                asdu.append(char(startPos & 0xFF));
+                asdu.append(char((startPos >> 8) & 0xFF));
+                asdu.append(char((startPos >> 16) & 0xFF));
+                asdu.append(char((startPos >> 24) & 0xFF));
+
+                // 封装链路层可变帧并发送
+                QByteArray frame = buildVariableFrame(asdu, 0x01);
+                if (!frame.isEmpty()) {
+                    emit requestSend(frame);
+                }
 }
 
 // 固定帧通用封装
@@ -458,51 +459,54 @@ void NorthChina103::feedRawData(const QByteArray &data)
         else if (asduType == 0x0E) {
             if (!m_isFileDownloading) break;
 
-            // 重置超时
-            m_fileDownloadTimer->start(5000);
+                // 重置超时定时器
+                m_fileDownloadTimer->start(5000);
 
-            // 跳过ASDU头部：TYP(1)+VSQ(1)+COT(1)+ASDU地址(1) = 4字节
-            int pos = 6 + 4; // 链路层6 + ASDU头4
+                // ASDU内部偏移：跳过TYP+VSQ+COT+ASDU地址 = 4字节
+                int asduPos = 4;
 
-            // 读取起始传输位置（4字节小端）
-            quint32 offset = static_cast<quint8>(frame[pos])
-                           | (static_cast<quint8>(frame[pos+1]) << 8)
-                           | (static_cast<quint8>(frame[pos+2]) << 16)
-                           | (static_cast<quint8>(frame[pos+3]) << 24);
-            pos += 4;
+                // 1. 读取本段起始传输位置（4字节小端）
+                quint32 offset = 0;
+                offset |= quint8(frame[asduPos++]);
+                offset |= quint8(frame[asduPos++]) << 8;
+                offset |= quint8(frame[asduPos++]) << 16;
+                offset |= quint8(frame[asduPos++]) << 24;
 
-            // 提取本段文件数据（到校验和之前）
-            int dataLen = frame.size() - 2 - pos; // 减去末尾校验和+结束符
-            QByteArray segment = frame.mid(pos, dataLen);
+                // 2. 提取本段文件数据（到帧尾校验和之前）
+                int dataLen = frame.size() - 2 - (6 + asduPos); // 链路层6 + asdu头 + 校验和结束符2
+                QByteArray segment = frame.mid(6 + asduPos, dataLen);
 
-            // 按偏移写入总缓存（保证顺序正确，支持断点续传）
-            if (offset + segment.size() > (quint32)m_fileDataCache.size()) {
-                m_fileDataCache.resize(offset + segment.size());
-            }
-            memcpy(m_fileDataCache.data() + offset, segment.constData(), segment.size());
-
-            // 进度通知
-            emit waveDownloadProgress(m_fileDataCache.size(), 0);
-
-            // 判断ACD位
-            uchar ctrl = static_cast<uchar>(frame.at(4));
-            bool hasMoreFrame = (ctrl & 0x20) != 0;
-
-            if (!hasMoreFrame) {
-                // 传输完成：解析拆分三个文件
-                QByteArray hdr, cfg, dat;
-                bool ok = parseComtradePackage(m_fileDataCache, hdr, cfg, dat);
-
-                m_isFileDownloading = false;
-                m_fileDownloadTimer->stop();
-                m_pollTimer->start(); // 恢复轮询
-
-                if (ok) {
-                    emit waveDownloadFinished(m_downloadFileName, hdr, cfg, dat);
-                } else {
-                    emit waveDownloadError("录波文件解析失败");
+                // 3. 按偏移写入总缓存（支持断点续传、乱序补全）
+                if (offset + segment.size() > quint32(m_filePackageCache.size())) {
+                    m_filePackageCache.resize(offset + segment.size());
                 }
-            }
+                memcpy(m_filePackageCache.data() + offset, segment.constData(), segment.size());
+
+                // 4. 进度上报
+                emit waveDownloadProgress(m_filePackageCache.size(), 0);
+
+                // 5. 判断ACD位，是否还有后续帧
+                uchar ctrl = quint8(frame.at(4));
+                bool hasMore = (ctrl & 0x20) != 0;
+
+                if (!hasMore) {
+                    // 传输完成：解析拆分三个COMTRADE文件
+                    QByteArray hdr, cfg, dat;
+                    bool parseOk = parseComtradePackage(m_filePackageCache, hdr, cfg, dat);
+
+                    m_isFileDownloading = false;
+                    m_fileDownloadTimer->stop();
+                    m_pollTimer->start(); // 恢复二级轮询
+
+                    quint32 total = m_filePackageCache.size();
+                    emit waveDownloadProgress(total, total);
+
+                    if (parseOk) {
+                        emit waveDownloadFinished(m_downloadFileName, hdr, cfg, dat);
+                    } else {
+                        emit waveDownloadError("文件包解析失败，格式不符合规约");
+                    }
+                }
 
         }
 
@@ -586,42 +590,42 @@ void NorthChina103::requestLevel1Data()
     emit requestSend(buildFrame({{"type","召唤一级数据"},{"addr",0x01}}));
 }
 
-bool NorthChina103::parseComtradePackage(const QByteArray &package, QByteArray &outHdr, QByteArray &outCfg, QByteArray &outDat)
+bool NorthChina103::parseComtradePackage(const QByteArray &pkg,QByteArray &outHdr,QByteArray &outCfg, QByteArray &outDat)
 {
     int pos = 0;
+
         // 1. 跳过40字节文件名
-        if (package.size() < 47) return false;
+        if (pkg.size() < 47) return false;
         pos += 40;
 
-        // 2. 跳过7字节故障时间
+        // 2. 跳过7字节故障时间（如需使用可自行解析）
         pos += 7;
 
-        // 3. 依次解析三个文件：类型1=HDR，类型2=CFG，类型3=DAT
+        // 3. 依次解析3个文件块
         for (int i = 0; i < 3; ++i) {
-            if (pos + 5 > package.size()) return false;
+            if (pos + 5 > pkg.size()) return false;
 
-            quint8 fileType = static_cast<quint8>(package[pos]);
-            pos += 1;
+            // 文件类型：1=HDR 2=CFG 3=DAT
+            quint8 type = quint8(pkg[pos++]);
 
-            // 4字节文件长度，小端
-            quint32 fileLen = static_cast<quint8>(package[pos])
-                            | (static_cast<quint8>(package[pos+1]) << 8)
-                            | (static_cast<quint8>(package[pos+2]) << 16)
-                            | (static_cast<quint8>(package[pos+3]) << 24);
-            pos += 4;
+            // 文件长度：4字节小端
+            quint32 len = 0;
+            len |= quint8(pkg[pos++]);
+            len |= quint8(pkg[pos++]) << 8;
+            len |= quint8(pkg[pos++]) << 16;
+            len |= quint8(pkg[pos++]) << 24;
 
-            if (pos + fileLen > (quint32)package.size()) return false;
-            QByteArray fileData = package.mid(pos, fileLen);
-            pos += fileLen;
+            if (pos + int(len) > pkg.size()) return false;
+            QByteArray content = pkg.mid(pos, len);
+            pos += len;
 
-            switch (fileType) {
-                case 1: outHdr = fileData; break;
-                case 2: outCfg = fileData; break;
-                case 3: outDat = fileData; break;
+            switch (type) {
+                case 1: outHdr = content; break;
+                case 2: outCfg = content; break;
+                case 3: outDat = content; break;
                 default: return false;
             }
         }
-
         return true;
 }
 
