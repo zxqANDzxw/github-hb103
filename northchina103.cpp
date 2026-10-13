@@ -276,8 +276,14 @@ void NorthChina103::downloadWaveFile(const QString &fileName, quint32 startPos)
 
         qDebug() << "[6] 填充文件名";
         QByteArray nameBytes = fileName.toLatin1();
-        nameBytes.resize(40);
-        nameBytes.fill('\0');
+        // 文件名超长则截断到40字节
+        if (nameBytes.size() > 40) {
+            nameBytes = nameBytes.left(40);
+        }
+        // 不足40字节，尾部补0
+        while (nameBytes.size() < 40) {
+            nameBytes.append('\0');
+        }
         asdu.append(nameBytes);
 
         qDebug() << "[7] 填充起始传输位置";
@@ -496,9 +502,12 @@ void NorthChina103::feedRawData(const QByteArray &data)
                 // 5. 判断ACD位，是否还有后续帧
                 uchar ctrl = quint8(frame.at(4));
                 bool hasMore = (ctrl & 0x20) != 0;
+                qDebug() << "[ASDU14] 控制域:" << QString::number(ctrl, 16)
+                         << "ACD位:" << (hasMore ? "1(还有后续)" : "0(传输结束)");
 
                 if (!hasMore) {
                     // 传输完成：解析拆分三个COMTRADE文件
+                    qDebug() << "[ASDU14] 进入传输完成分支，总缓存大小:" << m_filePackageCache.size();
                     QByteArray hdr, cfg, dat;
                     bool parseOk = parseComtradePackage(m_filePackageCache, hdr, cfg, dat);
 
