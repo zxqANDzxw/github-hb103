@@ -189,20 +189,29 @@ void WaveManageDialog::onWaveListReceived(const QList<WaveFileInfo> &waveList)
 
 void WaveManageDialog::onDownloadFile(const QString &fileName, int row)
 {
-    m_logEdit->appendPlainText(QString("【下载】开始下载录波文件：%1").arg(fileName));
-        // 调用规约层下载接口（后续补充完整下载逻辑）
-       // m_proto->downloadWaveFile(fileName);
 
-        // 模拟下载完成后更新样式（实际项目放到下载完成回调里）
-        QTableWidgetItem *item = ui->tableWidget->item(row, 1);
-        if (item) {
-            item->setForeground(QBrush(Qt::darkGreen));
-            QFont font = item->font();
-            font.setBold(false);
-            item->setFont(font);
-            item->setData(Qt::UserRole, true);
+    // 1. 防重判断：已有下载任务直接返回
+        if (m_currentDownloadRow != -1) {
+            m_logEdit->appendPlainText("【提示】当前有文件正在下载，请等待完成");
+            return;
         }
 
+        // 2. 标记占用 + 禁用按钮
+        m_currentDownloadRow = row;
+        QWidget *btnWidget = qobject_cast<QWidget*>(ui->tableWidget->cellWidget(row, 2));
+        if (btnWidget) {
+            QPushButton *btn = btnWidget->findChild<QPushButton*>("btnDownload");
+            if (btn) {
+                btn->setEnabled(false);
+                btn->setText("下载中");
+            }
+        }
+
+        // 3. 打印日志 + 真实调用规约层发起下载
+        m_logEdit->appendPlainText(QString("【下载】开始下载录波文件：%1").arg(fileName));
+        m_proto->downloadWaveFile(fileName);
+
+        // 注意：样式更新移到 waveDownloadFinished 信号回调里，下载完成再变绿色
 }
 
 void WaveManageDialog::onAnalyzeFile(const QString &fileName, int row)

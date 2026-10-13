@@ -250,42 +250,50 @@ QByteArray NorthChina103::buildFrame(const QVariantMap &param)
 
 void NorthChina103::downloadWaveFile(const QString &fileName, quint32 startPos)
 {
-    // 暂停二级轮询，避免FCB冲突
+
+    qDebug() << "[1] 进入下载函数";
+        if (m_isFileDownloading) return;
+
+        qDebug() << "[2] 暂停二级轮询";
         m_pollTimer->stop();
 
-        // 重置下载状态
+        qDebug() << "[3] 重置下载状态";
         m_downloadFileName = fileName;
         m_filePackageCache.clear();
         m_isFileDownloading = true;
+
+        qDebug() << "[4] 定时器地址：" << m_fileDownloadTimer;
         m_fileDownloadTimer->start(8000); // 首帧超时8秒
 
-        // ========== 组 ASDU13 报文 ==========
+        qDebug() << "[5] 开始组装ASDU";
         QByteArray asdu;
+        asdu.append(char(0x0D));
+        asdu.append(char(0x81));
+        asdu.append(char(0x00));
+        asdu.append(char(0x01));
+        asdu.append(char(0xFF));
+        asdu.append(char(0x00));
 
-            asdu.append(char(0x0D));  // 1.TYP 类型标识
-            asdu.append(char(0x81));  // 2.VSQ 单个信息体
-            asdu.append(char(0x00));  // 3.COT 传送原因
-            asdu.append(char(0x01));  // 4.ASDU地址
-            asdu.append(char(0xFF));  // 5.FUN 功能类型
-            asdu.append(char(0x00));  // 6.INF 信息序号
+        qDebug() << "[6] 填充文件名";
+        QByteArray nameBytes = fileName.toLatin1();
+        nameBytes.resize(40);
+        nameBytes.fill('\0');
+        asdu.append(nameBytes);
 
-            // 7.文件名：固定40字节，不足补0
-                QByteArray nameBytes = fileName.toLatin1();
-                nameBytes.resize(40);
-                nameBytes.fill('\0');
-                asdu.append(nameBytes);
+        qDebug() << "[7] 填充起始传输位置";
+        asdu.append(char(startPos & 0xFF));
+        asdu.append(char((startPos >> 8) & 0xFF));
+        asdu.append(char((startPos >> 16) & 0xFF));
+        asdu.append(char((startPos >> 24) & 0xFF));
 
-                // 8.起始传输位置：4字节 小端序
-                asdu.append(char(startPos & 0xFF));
-                asdu.append(char((startPos >> 8) & 0xFF));
-                asdu.append(char((startPos >> 16) & 0xFF));
-                asdu.append(char((startPos >> 24) & 0xFF));
+        qDebug() << "[8] 调用可变帧组帧";
+        QByteArray frame = buildVariableFrame(asdu, 0x01);
+        qDebug() << "[9] 组帧完成，长度：" << frame.size();
 
-                // 封装链路层可变帧并发送
-                QByteArray frame = buildVariableFrame(asdu, 0x01);
-                if (!frame.isEmpty()) {
-                    emit requestSend(frame);
-                }
+        if (!frame.isEmpty()) {
+            qDebug() << "[10] 发出requestSend信号";
+            emit requestSend(frame);
+        }
 }
 
 // 固定帧通用封装
