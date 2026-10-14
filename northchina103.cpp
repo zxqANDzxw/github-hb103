@@ -440,94 +440,159 @@ void NorthChina103::feedRawData(const QByteArray &data)
         if ((uchar)frame[0] != 0x68) continue;
         if (frame.size() < 7) continue;
 
-        uchar asduType = frame[6];
 
-        // ASDU16 = 录波文件列表
-        if (asduType == 0x10) {
-            QList<WaveFileInfo> list = parseWaveListAsdu(frame);
 
-            // 2. 追加到全局缓存
-            m_waveListCache.append(list);
 
-            // 3. 读取控制域，判断ACD位
-                uchar ctrl = static_cast<uchar>(frame.at(4));
-                bool hasMoreFrame = (ctrl & 0x20) != 0; // bit5 = ACD位
 
-                if (!hasMoreFrame) {
-                        // 最后一帧：发出完整列表信号，清空状态
-                     qDebug() << "[调试] 录波列表传输完成，总条目数:" << m_waveListCache.size(); // 加这行
-                        emit waveListReceived(m_waveListCache);
-                        m_waveListCache.clear();
-                        m_isWaveTransmitting = false;
-                        m_waveTransTimer->stop();
-                        m_pollTimer->start(); // 恢复二级数据轮询
+        if (frame[0] == 0x68) {
+            // 小端序解析长度域（标准写法）
+            quint16 len = quint8(frame[1]) | (quint8(frame[2]) << 8);
 
-                    } else {
-                        // 重置超时定时器（3秒没收到下一帧就算超时）
-                        m_waveTransTimer->start(3000);
-                    }
+            qDebug() << "[帧解析] 长度域原始字节:"
+                     << QString::number(quint8(frame[1]), 16)
+                     << QString::number(quint8(frame[2]), 16);
+            qDebug() << "[帧解析] 解析长度:" << len
+                     << "实际帧长:" << frame.size();
 
+            // ========== 强制边界校验 ==========
+            // 可变帧最小长度：68+长度+68+控制+地址+校验+16 = 8字节
+            if (frame.size() < 8) {
+                qDebug() << "[帧解析] 帧过短，直接丢弃";
+                break;
+            }
+            // 总帧长必须 >= 长度域值 + 6（启动符2 + 长度2 + 校验和+结束符2）
+            int expectTotal = len + 6;
+            if (frame.size() < expectTotal) {
+                qDebug() << "[帧解析] 帧不完整，等待后续数据";
+                break;
+            }
+
+            // 校验通过后，才允许取ASDU类型
+            quint8 asduType = frame[6];
+            qDebug() << "[帧解析] ASDU类型:" << QString::number(asduType, 16);
+
+
+
+
+
+
+            // ========== 校验和计算前后加边界校验 ==========
+            int csStart = 4; // 校验和起始：控制域（帧第4字节）
+            int csLen = len;   // 校验长度 = 长度域的值（控制域+地址域+ASDU总长度）
+
+            qDebug() << "[校验和] 起始位置:" << csStart
+                     << "计算长度:" << csLen
+                     << "帧总长度:" << frame.size();
+
+            // 硬边界保护：防止越界
+            if (csStart + csLen + 2 > frame.size()) {
+                qDebug() << "[校验和] 长度越界，丢弃本帧";
+                break;
+            }
+
+            // 计算校验和
+            quint8 calcCs = 0;
+            for (int i = 0; i < csLen; ++i) {
+                calcCs += quint8(frame[csStart + i]);
+            }
+            quint8 recvCs = quint8(frame[csStart + csLen]);
+            qDebug() << "[校验和] 计算值:" << QString::number(calcCs, 16)
+                     << "接收值:" << QString::number(recvCs, 16);
+
+
+
+
+
+            // 校验通过才进入业务分支
+            if (calcCs == recvCs && frame[csStart + csLen + 1] == 0x16) {
+                // 所有ASDU业务分支都放到这里面
+                if (asduType == 0x10) {
+                    // 录波列表逻辑
+                    QList<WaveFileInfo> list = parseWaveListAsdu(frame);
+
+                    // 2. 追加到全局缓存
+                    m_waveListCache.append(list);
+
+                    // 3. 读取控制域，判断ACD位
+                        uchar ctrl = static_cast<uchar>(frame.at(4));
+                        bool hasMoreFrame = (ctrl & 0x20) != 0; // bit5 = ACD位
+
+                        if (!hasMoreFrame) {
+                                // 最后一帧：发出完整列表信号，清空状态
+                             qDebug() << "[调试] 录波列表传输完成，总条目数:" << m_waveListCache.size(); // 加这行
+                                emit waveListReceived(m_waveListCache);
+                                m_waveListCache.clear();
+                                m_isWaveTransmitting = false;
+                                m_waveTransTimer->stop();
+                                m_pollTimer->start(); // 恢复二级数据轮询
+
+                            } else {
+                                // 重置超时定时器（3秒没收到下一帧就算超时）
+                                m_waveTransTimer->start(3000);
+                            }
+
+                }
+                else if (asduType == 0x0E) {
+                    // 文件数据逻辑
+                    if (!m_isFileDownloading) break;
+
+                        // 重置超时定时器
+                        m_fileDownloadTimer->start(5000);
+
+                        // ASDU内部偏移：跳过TYP+VSQ+COT+ASDU地址 = 4字节
+                        int asduPos = 4;
+
+                        // 1. 读取本段起始传输位置（4字节小端）
+                        quint32 offset = 0;
+                        offset |= quint8(frame[asduPos++]);
+                        offset |= quint8(frame[asduPos++]) << 8;
+                        offset |= quint8(frame[asduPos++]) << 16;
+                        offset |= quint8(frame[asduPos++]) << 24;
+
+                        // 2. 提取本段文件数据（到帧尾校验和之前）
+                        int dataLen = frame.size() - 2 - (6 + asduPos); // 链路层6 + asdu头 + 校验和结束符2
+                        QByteArray segment = frame.mid(6 + asduPos, dataLen);
+
+                        // 3. 按偏移写入总缓存（支持断点续传、乱序补全）
+                        if (offset + segment.size() > quint32(m_filePackageCache.size())) {
+                            m_filePackageCache.resize(offset + segment.size());
+                        }
+                        memcpy(m_filePackageCache.data() + offset, segment.constData(), segment.size());
+
+                        // 4. 进度上报
+                        emit waveDownloadProgress(m_filePackageCache.size(), 0);
+
+                        // 5. 判断ACD位，是否还有后续帧
+                        uchar ctrl = quint8(frame.at(4));
+                        bool hasMore = (ctrl & 0x20) != 0;
+                        qDebug() << "[ASDU14] 控制域:" << QString::number(ctrl, 16)
+                                 << "ACD位:" << (hasMore ? "1(还有后续)" : "0(传输结束)");
+
+                        if (!hasMore) {
+                            // 传输完成：解析拆分三个COMTRADE文件
+                            qDebug() << "[ASDU14] 进入传输完成分支，总缓存大小:" << m_filePackageCache.size();
+                            QByteArray hdr, cfg, dat;
+                            bool parseOk = parseComtradePackage(m_filePackageCache, hdr, cfg, dat);
+
+                            m_isFileDownloading = false;
+                            m_fileDownloadTimer->stop();
+                            m_pollTimer->start(); // 恢复二级轮询
+
+                            quint32 total = m_filePackageCache.size();
+                            emit waveDownloadProgress(total, total);
+
+                            if (parseOk) {
+                                emit waveDownloadFinished(m_downloadFileName, hdr, cfg, dat);
+                            } else {
+                                emit waveDownloadError("文件包解析失败，格式不符合规约");
+                            }
+                        }
+
+                }
+            }
 
         }
-        // ASDU14 = 录波文件数据应答
-        else if (asduType == 0x0E) {
-            if (!m_isFileDownloading) break;
 
-                // 重置超时定时器
-                m_fileDownloadTimer->start(5000);
-
-                // ASDU内部偏移：跳过TYP+VSQ+COT+ASDU地址 = 4字节
-                int asduPos = 4;
-
-                // 1. 读取本段起始传输位置（4字节小端）
-                quint32 offset = 0;
-                offset |= quint8(frame[asduPos++]);
-                offset |= quint8(frame[asduPos++]) << 8;
-                offset |= quint8(frame[asduPos++]) << 16;
-                offset |= quint8(frame[asduPos++]) << 24;
-
-                // 2. 提取本段文件数据（到帧尾校验和之前）
-                int dataLen = frame.size() - 2 - (6 + asduPos); // 链路层6 + asdu头 + 校验和结束符2
-                QByteArray segment = frame.mid(6 + asduPos, dataLen);
-
-                // 3. 按偏移写入总缓存（支持断点续传、乱序补全）
-                if (offset + segment.size() > quint32(m_filePackageCache.size())) {
-                    m_filePackageCache.resize(offset + segment.size());
-                }
-                memcpy(m_filePackageCache.data() + offset, segment.constData(), segment.size());
-
-                // 4. 进度上报
-                emit waveDownloadProgress(m_filePackageCache.size(), 0);
-
-                // 5. 判断ACD位，是否还有后续帧
-                uchar ctrl = quint8(frame.at(4));
-                bool hasMore = (ctrl & 0x20) != 0;
-                qDebug() << "[ASDU14] 控制域:" << QString::number(ctrl, 16)
-                         << "ACD位:" << (hasMore ? "1(还有后续)" : "0(传输结束)");
-
-                if (!hasMore) {
-                    // 传输完成：解析拆分三个COMTRADE文件
-                    qDebug() << "[ASDU14] 进入传输完成分支，总缓存大小:" << m_filePackageCache.size();
-                    QByteArray hdr, cfg, dat;
-                    bool parseOk = parseComtradePackage(m_filePackageCache, hdr, cfg, dat);
-
-                    m_isFileDownloading = false;
-                    m_fileDownloadTimer->stop();
-                    m_pollTimer->start(); // 恢复二级轮询
-
-                    quint32 total = m_filePackageCache.size();
-                    emit waveDownloadProgress(total, total);
-
-                    if (parseOk) {
-                        emit waveDownloadFinished(m_downloadFileName, hdr, cfg, dat);
-                    } else {
-                        emit waveDownloadError("文件包解析失败，格式不符合规约");
-                    }
-                }
-
-        }
-
-        // 后续扩展其他ASDU...
     }
 
     // 整批处理完统一响应一级召唤
