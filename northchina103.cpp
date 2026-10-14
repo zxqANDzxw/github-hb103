@@ -250,56 +250,64 @@ QByteArray NorthChina103::buildFrame(const QVariantMap &param)
 
 void NorthChina103::downloadWaveFile(const QString &fileName, quint32 startPos)
 {
-
     qDebug() << "[1] 进入下载函数";
-        if (m_isFileDownloading) return;
 
-        qDebug() << "[2] 暂停二级轮询";
+        // 互斥判断
+        if (m_isFileDownloading) {
+            qDebug() << "[下载] 已有任务在传输，直接返回";
+            return;
+        }
+
+        // ========== 第一步：先设置所有状态（必须在任何发送操作之前） ==========
         m_pollTimer->stop();
-
-        qDebug() << "[3] 重置下载状态";
         m_downloadFileName = fileName;
         m_filePackageCache.clear();
-        m_isFileDownloading = true;
-
-        qDebug() << "[4] 定时器地址：" << m_fileDownloadTimer;
+        m_isFileDownloading = true; // 状态赋值放在最前面，确保发报文前状态已生效
         m_fileDownloadTimer->start(8000); // 首帧超时8秒
 
-        qDebug() << "[5] 开始组装ASDU";
-        QByteArray asdu;
-        asdu.append(char(0x0D));
-        asdu.append(char(0x81));
-        asdu.append(char(0x00));
-        asdu.append(char(0x01));
-        asdu.append(char(0xFF));
-        asdu.append(char(0x00));
+        qDebug() << "[2] 状态已设置为下载中，开始组装ASDU";
 
-        qDebug() << "[6] 填充文件名";
+        // ========== 第二步：组装ASDU13 ==========
+        QByteArray asdu;
+        asdu.append(char(0x0D));  // TYP
+        asdu.append(char(0x81));  // VSQ
+        asdu.append(char(0x00));  // COT
+        asdu.append(char(0x01));  // ASDU地址
+        asdu.append(char(0xFF));  // FUN
+        asdu.append(char(0x00));  // INF
+
+        // 文件名：固定40字节，超长截断、不足补0
         QByteArray nameBytes = fileName.toLatin1();
-        // 文件名超长则截断到40字节
         if (nameBytes.size() > 40) {
             nameBytes = nameBytes.left(40);
         }
-        // 不足40字节，尾部补0
         while (nameBytes.size() < 40) {
             nameBytes.append('\0');
         }
         asdu.append(nameBytes);
 
-        qDebug() << "[7] 填充起始传输位置";
+        // 起始传输位置：4字节小端
         asdu.append(char(startPos & 0xFF));
         asdu.append(char((startPos >> 8) & 0xFF));
         asdu.append(char((startPos >> 16) & 0xFF));
         asdu.append(char((startPos >> 24) & 0xFF));
 
-        qDebug() << "[8] 调用可变帧组帧";
-        QByteArray frame = buildVariableFrame(asdu, 0x01);
-        qDebug() << "[9] 组帧完成，长度：" << frame.size();
+        qDebug() << "[3] ASDU组装完成，调用组帧";
 
-        if (!frame.isEmpty()) {
-            qDebug() << "[10] 发出requestSend信号";
-            emit requestSend(frame);
+        // ========== 第三步：组帧发送，失败则回滚状态 ==========
+        QByteArray frame = buildVariableFrame(asdu, 0x01);
+        if (frame.isEmpty()) {
+            qDebug() << "[下载] 组帧失败，回滚状态";
+          //  m_isFileDownloading = false;
+            m_pollTimer->start();
+            m_fileDownloadTimer->stop();
+            emit waveDownloadError("下载召唤帧组帧失败");
+            return;
         }
+
+        qDebug() << "[4] 组帧完成，长度：" << frame.size() << "，开始发送";
+        emit requestSend(frame);
+        qDebug() << "[5] 下载召唤帧已发送";
 }
 
 // 固定帧通用封装
@@ -500,11 +508,14 @@ void NorthChina103::feedRawData(const QByteArray &data)
                      << "接收值:" << QString::number(recvCs, 16);
 
 
-
+ qDebug() << "-11111111111111111111111111111111111111111111111111-";
 
 
             // 校验通过才进入业务分支
             if (calcCs == recvCs && frame[csStart + csLen + 1] == 0x16) {
+
+
+                qDebug() << "-222222222222222222222222222222222222222222222222222-";
                 // 所有ASDU业务分支都放到这里面
                 if (asduType == 0x10) {
                     // 录波列表逻辑
@@ -533,9 +544,12 @@ void NorthChina103::feedRawData(const QByteArray &data)
 
                 }
                 else if (asduType == 0x0E) {
+qDebug() << "[ASDU14] 进入分支，下载状态：" << m_isFileDownloading;
+  qDebug() << "--3333333333333333333333333333333333333333333333333333333333-";
+  qDebug() << "[ASDU14] 进入分支，下载状态：" << m_isFileDownloading;
                     // 文件数据逻辑
                     if (!m_isFileDownloading) break;
-
+  qDebug() << "--4444444444444444444444444444444444444444444444444444444444-";
                         // 重置超时定时器
                         m_fileDownloadTimer->start(5000);
 
