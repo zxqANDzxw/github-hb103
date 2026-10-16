@@ -262,6 +262,7 @@ void NorthChina103::downloadWaveFile(const QString &fileName, quint32 startPos)
         m_pollTimer->stop();
         m_downloadFileName = fileName;
         m_filePackageCache.clear();
+        m_totalFileSize = 0;//下载录波文件大小 从报文数据中获取
         m_isFileDownloading = true; // 状态赋值放在最前面，确保发报文前状态已生效
         m_fileDownloadTimer->start(8000); // 首帧超时8秒
 
@@ -553,28 +554,85 @@ qDebug() << "[ASDU14] 进入分支，下载状态：" << m_isFileDownloading;
                         // 重置超时定时器
                         m_fileDownloadTimer->start(5000);
 
+
+
                         // ASDU内部偏移：跳过TYP+VSQ+COT+ASDU地址 = 4字节
-                        int asduPos = 4;
+                            int asduPos = 4;
+                            const int LINK_BASE = 6; // 链路层头部总长度，ASDU从帧第6字节开始
 
-                        // 1. 读取本段起始传输位置（4字节小端）
-                        quint32 offset = 0;
-                        offset |= quint8(frame[asduPos++]);
-                        offset |= quint8(frame[asduPos++]) << 8;
-                        offset |= quint8(frame[asduPos++]) << 16;
-                        offset |= quint8(frame[asduPos++]) << 24;
+                            // 1. 读取本段起始传输位置（4字节小端）
+                            quint32 offset = 0;
+                            offset |= quint8(frame[LINK_BASE + asduPos++]);
+                            offset |= quint8(frame[LINK_BASE + asduPos++]) << 8;
+                            offset |= quint8(frame[LINK_BASE + asduPos++]) << 16;
+                            offset |= quint8(frame[LINK_BASE + asduPos++]) << 24;
 
-                        // 2. 提取本段文件数据（到帧尾校验和之前）
-                        int dataLen = frame.size() - 2 - (6 + asduPos); // 链路层6 + asdu头 + 校验和结束符2
-                        QByteArray segment = frame.mid(6 + asduPos, dataLen);
 
-                        // 3. 按偏移写入总缓存（支持断点续传、乱序补全）
-                        if (offset + segment.size() > quint32(m_filePackageCache.size())) {
-                            m_filePackageCache.resize(offset + segment.size());
-                        }
-                        memcpy(m_filePackageCache.data() + offset, segment.constData(), segment.size());
+
+
+
+                            // 硬保护：偏移超过10MB直接丢弃，防止越界崩溃
+                            if (offset > 10 * 1024 * 1024) {
+                                qDebug() << "[ASDU14] 偏移异常：" << offset << "，丢弃本帧";
+                                break;
+                            }
+
+
+
+                            // 2. 提取本段文件数据（到帧尾校验和之前）
+                            int dataStart = LINK_BASE + asduPos;
+                            int dataLen = frame.size() - 2 - dataStart; // 减去末尾校验和+结束符共2字节
+                            if (dataLen <= 0) {
+                                qDebug() << "[ASDU14] 本段无有效数据";
+                                break;
+                            }
+                            QByteArray segment = frame.mid(dataStart, dataLen);
+
+                            // 3. 按偏移写入总缓存（支持断点续传、乱序补全）
+                            quint32 needSize = offset + dataLen;
+                            if (needSize > 10 * 1024 * 1024) { // 总大小超限保护
+                                break;
+                            }
+                            if (needSize > quint32(m_filePackageCache.size())) {
+                                m_filePackageCache.resize(needSize);
+                            }
+                            memcpy(m_filePackageCache.data() + offset, segment.constData(), dataLen);
+
+
+
+                            // 首次接收到偏移0的数据时，解析总文件大小
+                                if (offset == 0 && segment.size() >= 62) {
+                                    // 跳过40字节文件名 + 7字节故障时间 = 47字节，开始读文件块
+                                    int pos = 47;
+                                    quint32 hdrLen = 0, cfgLen = 0, datLen = 0;
+
+                                    for (int i = 0; i < 3; ++i) {
+                                        pos++; // 跳过1字节类型标识
+                                        // 读取4字节小端长度
+                                        quint32 len = 0;
+                                        len |= quint8(segment[pos++]);
+                                        len |= quint8(segment[pos++]) << 8;
+                                        len |= quint8(segment[pos++]) << 16;
+                                        len |= quint8(segment[pos++]) << 24;
+
+                                        if (i == 0) hdrLen = len;
+                                        else if (i == 1) cfgLen = len;
+                                        else datLen = len;
+                                    }
+                                    // 计算完整文件包总大小
+                                    m_totalFileSize = 40 + 7 + 3*(1+4) + hdrLen + cfgLen + datLen;
+                                }
+
+
+
+
+
+
+
+
 
                         // 4. 进度上报
-                        emit waveDownloadProgress(m_filePackageCache.size(), 0);
+                        emit waveDownloadProgress(m_filePackageCache.size(), m_totalFileSize);
 
                         // 5. 判断ACD位，是否还有后续帧
                         uchar ctrl = quint8(frame.at(4));

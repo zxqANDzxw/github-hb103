@@ -9,6 +9,7 @@
 #include <QDateTime>
 #include <QTimer>
 
+
 class NorthChina103 : public IProtocol
 {
     Q_OBJECT
@@ -75,6 +76,7 @@ private:
                                   QByteArray &outHdr,
                                   QByteArray &outCfg,
                                   QByteArray &outDat);
+        quint32 m_totalFileSize = 0; // 完整文件包总大小
 
 
 signals:
