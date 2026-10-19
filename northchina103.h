@@ -78,6 +78,9 @@ private:
                                   QByteArray &outDat);
         quint32 m_totalFileSize = 0; // 完整文件包总大小
 
+        quint32 m_hdrLen = 0;   // HDR文件真实长度
+        quint32 m_cfgLen = 0;   // CFG文件真实长度
+        quint32 m_datLen = 0;   // DAT文件真实长度
 
 signals:
    // void waveListReceived(const QList<WaveFileInfo> &list);

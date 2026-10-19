@@ -38,17 +38,9 @@ WaveManageDialog::WaveManageDialog(QWidget *parent,TcpClient *tcp,IProtocol *pro
 
 
         // 3. 下载进度
-        connect(m_proto, &IProtocol::waveDownloadProgress, this, [=](quint32 recv, quint32 total){
-            qDebug() << "5555555555555555555555555555555555555555555555555555555555555[进度] 已收:" << recv << " 总大小:" << total; // 加这行
-            if (total > 0) {
-                // 已解析出总大小，显示真实百分比
-                        ui->progressBar->setRange(0, 100);
-                        int percent = qMin(100, int(recv * 100 / total));
-                        ui->progressBar->setValue(percent);
-                    } else {
-                        // 还没解析出总大小，短暂跑马灯过渡
-                        ui->progressBar->setRange(0, 0);
-                    }
+        connect(m_proto, &IProtocol::waveDownloadProgress, this, [=](quint32 percent, quint32 total){
+            ui->progressBar->setRange(0, total);
+            ui->progressBar->setValue(percent);
         });
 
             connect(m_proto, &IProtocol::waveDownloadFinished,

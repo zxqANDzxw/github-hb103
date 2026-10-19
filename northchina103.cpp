@@ -263,6 +263,9 @@ void NorthChina103::downloadWaveFile(const QString &fileName, quint32 startPos)
         m_downloadFileName = fileName;
         m_filePackageCache.clear();
         m_totalFileSize = 0;//下载录波文件大小 从报文数据中获取
+        m_hdrLen = 0;
+        m_cfgLen = 0;
+        m_datLen = 0;
         m_isFileDownloading = true; // 状态赋值放在最前面，确保发报文前状态已生效
         m_fileDownloadTimer->start(8000); // 首帧超时8秒
 
@@ -600,39 +603,79 @@ qDebug() << "[ASDU14] 进入分支，下载状态：" << m_isFileDownloading;
 
 
 
-                            // 首次接收到偏移0的数据时，解析总文件大小
-                                if (offset == 0 && segment.size() >= 62) {
-                                    // 跳过40字节文件名 + 7字节故障时间 = 47字节，开始读文件块
-                                    int pos = 47;
-                                    quint32 hdrLen = 0, cfgLen = 0, datLen = 0;
 
-                                    for (int i = 0; i < 3; ++i) {
-                                        pos++; // 跳过1字节类型标识
-                                        // 读取4字节小端长度
-                                        quint32 len = 0;
-                                        len |= quint8(segment[pos++]);
-                                        len |= quint8(segment[pos++]) << 8;
-                                        len |= quint8(segment[pos++]) << 16;
-                                        len |= quint8(segment[pos++]) << 24;
+                            // ========== 三文件等权重进度计算 ==========
+                            const int PKG_HEAD = 47;       // 文件包公共头部：40字节文件名 + 7字节故障时间
+                            const int FILE_BLOCK_HEAD = 5; // 每个文件块头部：1字节类型 + 4字节长度
+                            double totalPercent = 0.0;
+                            qint64 curPos = m_filePackageCache.size(); // 当前已接收总字节数
 
-                                        if (i == 0) hdrLen = len;
-                                        else if (i == 1) cfgLen = len;
-                                        else datLen = len;
-                                    }
-                                    // 计算完整文件包总大小
-                                    m_totalFileSize = 40 + 7 + 3*(1+4) + hdrLen + cfgLen + datLen;
-                                }
+                            // 1. 动态解析遇到的文件长度字段
+                            // 检查HDR长度字段位置
+                            if (m_hdrLen == 0 && curPos >= PKG_HEAD + FILE_BLOCK_HEAD) {
+                                int pos = PKG_HEAD + 1; // 跳过HDR类型标识
+                                m_hdrLen  = quint8(m_filePackageCache[pos++]);
+                                m_hdrLen |= quint8(m_filePackageCache[pos++]) << 8;
+                                m_hdrLen |= quint8(m_filePackageCache[pos++]) << 16;
+                                m_hdrLen |= quint8(m_filePackageCache[pos++]) << 24;
+                            }
+                            // 检查CFG长度字段位置
+                            qint64 cfgLenPos = PKG_HEAD + FILE_BLOCK_HEAD + m_hdrLen + 1;
+                            if (m_cfgLen == 0 && m_hdrLen > 0 && curPos >= cfgLenPos + 4) {
+                                int pos = cfgLenPos;
+                                m_cfgLen  = quint8(m_filePackageCache[pos++]);
+                                m_cfgLen |= quint8(m_filePackageCache[pos++]) << 8;
+                                m_cfgLen |= quint8(m_filePackageCache[pos++]) << 16;
+                                m_cfgLen |= quint8(m_filePackageCache[pos++]) << 24;
+                            }
+                            // 检查DAT长度字段位置
+                            qint64 datLenPos = PKG_HEAD + 2*FILE_BLOCK_HEAD + m_hdrLen + m_cfgLen + 1;
+                            if (m_datLen == 0 && m_cfgLen > 0 && curPos >= datLenPos + 4) {
+                                int pos = datLenPos;
+                                m_datLen  = quint8(m_filePackageCache[pos++]);
+                                m_datLen |= quint8(m_filePackageCache[pos++]) << 8;
+                                m_datLen |= quint8(m_filePackageCache[pos++]) << 16;
+                                m_datLen |= quint8(m_filePackageCache[pos++]) << 24;
+                            }
+
+                            // 2. 分阶段计算总进度（每个文件各占1/3权重）
+                            if (curPos <= PKG_HEAD) {
+                                // 还在公共头部，进度0
+                                totalPercent = 0.0;
+                            }
+                            else if (m_hdrLen > 0 && curPos <= PKG_HEAD + FILE_BLOCK_HEAD + m_hdrLen) {
+                                // 阶段1：HDR文件传输中，占33.3%
+                                qint64 innerPos = curPos - (PKG_HEAD + FILE_BLOCK_HEAD);
+                                double innerPercent = qMin(1.0, (double)innerPos / m_hdrLen);
+                                totalPercent = innerPercent * 33.33;
+                            }
+                            else if (m_cfgLen > 0 && curPos <= PKG_HEAD + 2*FILE_BLOCK_HEAD + m_hdrLen + m_cfgLen) {
+                                // 阶段2：CFG文件传输中，占33.3%
+                                qint64 cfgStart = PKG_HEAD + FILE_BLOCK_HEAD + m_hdrLen + FILE_BLOCK_HEAD;
+                                qint64 innerPos = curPos - cfgStart;
+                                double innerPercent = qMin(1.0, (double)innerPos / m_cfgLen);
+                                totalPercent = 33.33 + innerPercent * 33.33;
+                            }
+                            else if (m_datLen > 0) {
+                                // 阶段3：DAT文件传输中，占33.34%
+                                qint64 datStart = PKG_HEAD + 2*FILE_BLOCK_HEAD + m_hdrLen + m_cfgLen + FILE_BLOCK_HEAD;
+                                qint64 innerPos = curPos - datStart;
+                                double innerPercent = qMin(1.0, (double)innerPos / m_datLen);
+                                totalPercent = 66.66 + innerPercent * 33.34;
+                            }
+                            else {
+                                // 跨阶段且未解析到下一个文件长度时，平滑过渡
+                                totalPercent = 33.33;
+                            }
+
+                            // 进度上报：第二个参数传百分比整数（界面直接用）
+                            emit waveDownloadProgress(qRound(totalPercent), 100);
 
 
 
 
 
 
-
-
-
-                        // 4. 进度上报
-                        emit waveDownloadProgress(m_filePackageCache.size(), m_totalFileSize);
 
                         // 5. 判断ACD位，是否还有后续帧
                         uchar ctrl = quint8(frame.at(4));
