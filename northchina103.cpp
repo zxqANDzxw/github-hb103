@@ -23,22 +23,23 @@ NorthChina103::NorthChina103(QObject *parent)
     m_waveTransTimer = new QTimer(this);
         m_waveTransTimer->setSingleShot(true);
         connect(m_waveTransTimer, &QTimer::timeout, this, [=](){
-            // 超时兜底：清空缓存，重置状态，上报错误
-            m_waveListCache.clear();
-            m_isWaveTransmitting = false;
-            emit waveListError("文件列表传输超时");
-            m_pollTimer->start(); // 恢复二级数据轮询
-        });
+                                                                    // 超时兜底：清空缓存，重置状态，上报错误
+                                                                 m_waveListCache.clear();
+                                                                 m_isWaveTransmitting = false;
+                                                                 emit waveListError("文件列表传输超时");
+                                                                  m_pollTimer->start();   }
+               );
 
         // 文件下载超时定时器
             m_fileDownloadTimer = new QTimer(this);
             m_fileDownloadTimer->setSingleShot(true);
-            connect(m_fileDownloadTimer, &QTimer::timeout, this, [=](){
-               m_filePackageCache.clear();
-                m_isFileDownloading = false;
-                emit waveDownloadError("录波文件下载超时");
-                m_pollTimer->start(); // 恢复轮询
-            });
+        connect(m_fileDownloadTimer, &QTimer::timeout, this, [=](){m_filePackageCache.clear();
+                                                            m_isFileDownloading = false;
+                                                            qDebug() << "下载超时";
+                                                            emit waveDownloadError("录波文件下载超时");
+                                                            m_pollTimer->start();
+                                                            }
+                 );
 
 
 }
@@ -250,7 +251,10 @@ QByteArray NorthChina103::buildFrame(const QVariantMap &param)
 
 void NorthChina103::downloadWaveFile(const QString &fileName, quint32 startPos)
 {
-    qDebug() << "[1] 进入下载函数";
+
+
+
+    qDebug() << ">>>>>>>>>> 进入downloadWaveFile函数";
 
         // 互斥判断
         if (m_isFileDownloading) {
@@ -267,9 +271,13 @@ void NorthChina103::downloadWaveFile(const QString &fileName, quint32 startPos)
         m_cfgLen = 0;
         m_datLen = 0;
         m_isFileDownloading = true; // 状态赋值放在最前面，确保发报文前状态已生效
-        m_fileDownloadTimer->start(8000); // 首帧超时8秒
 
-        qDebug() << "[2] 状态已设置为下载中，开始组装ASDU";
+
+        m_fileDownloadTimer->stop();  // 先停止，清空之前的残留计时
+        m_fileDownloadTimer->start(1); // 再重新启动8秒首帧超时
+
+
+        qDebug() << "[2] 状态已设置为下载中，开始组装ASDU-------------------------";
 
         // ========== 第二步：组装ASDU13 ==========
         QByteArray asdu;
@@ -311,7 +319,10 @@ void NorthChina103::downloadWaveFile(const QString &fileName, quint32 startPos)
 
         qDebug() << "[4] 组帧完成，长度：" << frame.size() << "，开始发送";
         emit requestSend(frame);
+         m_fileDownloadTimer->stop();
+         m_pollTimer->start();
         qDebug() << "[5] 下载召唤帧已发送";
+
 }
 
 // 固定帧通用封装
@@ -460,28 +471,28 @@ void NorthChina103::feedRawData(const QByteArray &data)
             // 小端序解析长度域（标准写法）
             quint16 len = quint8(frame[1]) | (quint8(frame[2]) << 8);
 
-            qDebug() << "[帧解析] 长度域原始字节:"
+            qDebug() << "[feedRawData帧解析] 长度域原始字节:"
                      << QString::number(quint8(frame[1]), 16)
                      << QString::number(quint8(frame[2]), 16);
-            qDebug() << "[帧解析] 解析长度:" << len
+            qDebug() << "[feedRawData帧解析] 解析长度:" << len
                      << "实际帧长:" << frame.size();
 
             // ========== 强制边界校验 ==========
             // 可变帧最小长度：68+长度+68+控制+地址+校验+16 = 8字节
             if (frame.size() < 8) {
-                qDebug() << "[帧解析] 帧过短，直接丢弃";
+                qDebug() << "[feedRawData帧解析] 帧过短，直接丢弃";
                 break;
             }
             // 总帧长必须 >= 长度域值 + 6（启动符2 + 长度2 + 校验和+结束符2）
             int expectTotal = len + 6;
             if (frame.size() < expectTotal) {
-                qDebug() << "[帧解析] 帧不完整，等待后续数据";
+                qDebug() << "[feedRawData帧解析] 帧不完整，等待后续数据";
                 break;
             }
 
             // 校验通过后，才允许取ASDU类型
             quint8 asduType = frame[6];
-            qDebug() << "[帧解析] ASDU类型:" << QString::number(asduType, 16);
+            qDebug() << "[feedRawData帧解析] ASDU类型:" << QString::number(asduType, 16);
 
 
 
@@ -492,13 +503,13 @@ void NorthChina103::feedRawData(const QByteArray &data)
             int csStart = 4; // 校验和起始：控制域（帧第4字节）
             int csLen = len;   // 校验长度 = 长度域的值（控制域+地址域+ASDU总长度）
 
-            qDebug() << "[校验和] 起始位置:" << csStart
+            qDebug() << "[feedRawData校验和] 起始位置:" << csStart
                      << "计算长度:" << csLen
                      << "帧总长度:" << frame.size();
 
             // 硬边界保护：防止越界
             if (csStart + csLen + 2 > frame.size()) {
-                qDebug() << "[校验和] 长度越界，丢弃本帧";
+                qDebug() << "[feedRawData校验和] 长度越界，丢弃本帧";
                 break;
             }
 
@@ -508,18 +519,18 @@ void NorthChina103::feedRawData(const QByteArray &data)
                 calcCs += quint8(frame[csStart + i]);
             }
             quint8 recvCs = quint8(frame[csStart + csLen]);
-            qDebug() << "[校验和] 计算值:" << QString::number(calcCs, 16)
+            qDebug() << "[feedRawData校验和] 计算值:" << QString::number(calcCs, 16)
                      << "接收值:" << QString::number(recvCs, 16);
 
 
- qDebug() << "-11111111111111111111111111111111111111111111111111-";
+
 
 
             // 校验通过才进入业务分支
             if (calcCs == recvCs && frame[csStart + csLen + 1] == 0x16) {
 
 
-                qDebug() << "-222222222222222222222222222222222222222222222222222-";
+
                 // 所有ASDU业务分支都放到这里面
                 if (asduType == 0x10) {
                     // 录波列表逻辑
@@ -534,7 +545,7 @@ void NorthChina103::feedRawData(const QByteArray &data)
 
                         if (!hasMoreFrame) {
                                 // 最后一帧：发出完整列表信号，清空状态
-                             qDebug() << "[调试] 录波列表传输完成，总条目数:" << m_waveListCache.size(); // 加这行
+                             qDebug() << "[feedRawData调试] 录波列表传输完成，总条目数:" << m_waveListCache.size(); // 加这行
                                 emit waveListReceived(m_waveListCache);
                                 m_waveListCache.clear();
                                 m_isWaveTransmitting = false;
@@ -548,14 +559,13 @@ void NorthChina103::feedRawData(const QByteArray &data)
 
                 }
                 else if (asduType == 0x0E) {
-qDebug() << "[ASDU14] 进入分支，下载状态：" << m_isFileDownloading;
-  qDebug() << "--3333333333333333333333333333333333333333333333333333333333-";
-  qDebug() << "[ASDU14] 进入分支，下载状态：" << m_isFileDownloading;
+qDebug() << "[feedRawData-ASDU14] m_isFileDownloading：" << m_isFileDownloading;
                     // 文件数据逻辑
                     if (!m_isFileDownloading) break;
-  qDebug() << "--4444444444444444444444444444444444444444444444444444444444-";
+  qDebug() << "[feedRawData-ASDU14] m_isFileDownloading==true";
                         // 重置超时定时器
-                        m_fileDownloadTimer->start(5000);
+                      //  m_fileDownloadTimer->stop();
+                        //m_fileDownloadTimer->start(5000);
 
 
 
@@ -576,7 +586,7 @@ qDebug() << "[ASDU14] 进入分支，下载状态：" << m_isFileDownloading;
 
                             // 硬保护：偏移超过10MB直接丢弃，防止越界崩溃
                             if (offset > 10 * 1024 * 1024) {
-                                qDebug() << "[ASDU14] 偏移异常：" << offset << "，丢弃本帧";
+                                qDebug() << "[feedRawData-ASDU14] 偏移异常：" << offset << "，丢弃本帧";
                                 break;
                             }
 
@@ -586,10 +596,20 @@ qDebug() << "[ASDU14] 进入分支，下载状态：" << m_isFileDownloading;
                             int dataStart = LINK_BASE + asduPos;
                             int dataLen = frame.size() - 2 - dataStart; // 减去末尾校验和+结束符共2字节
                             if (dataLen <= 0) {
-                                qDebug() << "[ASDU14] 本段无有效数据";
+                                qDebug() << "[feedRawData-ASDU14] 本段无有效数据";
                                 break;
                             }
                             QByteArray segment = frame.mid(dataStart, dataLen);
+
+
+                            // ========== 新增：逐帧打印调试信息 ==========
+                            /*    qDebug() << "[文件帧调试] 起始偏移:" << offset
+                                         << " 本帧数据长度:" << dataLen
+                                         << " 写入后累计大小:" << offset + dataLen
+                                         << " 当前缓存已有:" << m_filePackageCache.size();
+                            */
+
+
 
                             // 3. 按偏移写入总缓存（支持断点续传、乱序补全）
                             quint32 needSize = offset + dataLen;
@@ -610,33 +630,88 @@ qDebug() << "[ASDU14] 进入分支，下载状态：" << m_isFileDownloading;
                             double totalPercent = 0.0;
                             qint64 curPos = m_filePackageCache.size(); // 当前已接收总字节数
 
-                            // 1. 动态解析遇到的文件长度字段
-                            // 检查HDR长度字段位置
-                            if (m_hdrLen == 0 && curPos >= PKG_HEAD + FILE_BLOCK_HEAD) {
-                                int pos = PKG_HEAD + 1; // 跳过HDR类型标识
-                                m_hdrLen  = quint8(m_filePackageCache[pos++]);
-                                m_hdrLen |= quint8(m_filePackageCache[pos++]) << 8;
-                                m_hdrLen |= quint8(m_filePackageCache[pos++]) << 16;
-                                m_hdrLen |= quint8(m_filePackageCache[pos++]) << 24;
-                            }
-                            // 检查CFG长度字段位置
-                            qint64 cfgLenPos = PKG_HEAD + FILE_BLOCK_HEAD + m_hdrLen + 1;
-                            if (m_cfgLen == 0 && m_hdrLen > 0 && curPos >= cfgLenPos + 4) {
-                                int pos = cfgLenPos;
-                                m_cfgLen  = quint8(m_filePackageCache[pos++]);
-                                m_cfgLen |= quint8(m_filePackageCache[pos++]) << 8;
-                                m_cfgLen |= quint8(m_filePackageCache[pos++]) << 16;
-                                m_cfgLen |= quint8(m_filePackageCache[pos++]) << 24;
-                            }
-                            // 检查DAT长度字段位置
-                            qint64 datLenPos = PKG_HEAD + 2*FILE_BLOCK_HEAD + m_hdrLen + m_cfgLen + 1;
-                            if (m_datLen == 0 && m_cfgLen > 0 && curPos >= datLenPos + 4) {
-                                int pos = datLenPos;
-                                m_datLen  = quint8(m_filePackageCache[pos++]);
-                                m_datLen |= quint8(m_filePackageCache[pos++]) << 8;
-                                m_datLen |= quint8(m_filePackageCache[pos++]) << 16;
-                                m_datLen |= quint8(m_filePackageCache[pos++]) << 24;
-                            }
+
+
+                            // 1. 检查HDR长度字段位置
+                                if (m_hdrLen == 0 && curPos >= PKG_HEAD + FILE_BLOCK_HEAD) {
+                                    int pos = PKG_HEAD;
+                                    quint8 type = quint8(m_filePackageCache[pos++]);
+                                    // 无论是否正确，都打印标志位
+                                    qDebug() << "[feedRawData-进度] HDR类型标志: 0x" << QString::number(type, 16).toUpper();
+
+                                    if (type == 0x01) {
+                                        m_hdrLen  = quint8(m_filePackageCache[pos++]);
+                                        m_hdrLen |= quint8(m_filePackageCache[pos++]) << 8;
+                                        m_hdrLen |= quint8(m_filePackageCache[pos++]) << 16;
+                                        m_hdrLen |= quint8(m_filePackageCache[pos++]) << 24;
+
+                                        // HDR内容起始位置 = 公共头 + HDR块头
+                                        qint64 hdrDataStart = PKG_HEAD + FILE_BLOCK_HEAD;
+                                        qint64 hdrBlockEnd  = hdrDataStart + m_hdrLen;
+                                        qDebug() << "[feedRawData-文件结构] HDR文件 → 内容起始偏移:" << hdrDataStart
+                                                 << " 内容长度:" << m_hdrLen<< "字节"
+                                                 << " 整个HDR块结束位置:" << hdrBlockEnd;
+
+                                    } else {
+                                        qDebug() << "[feedRawData-进度] HDR类型标志异常，期望 0x01，跳过长度解析";
+                                    }
+                                }
+
+                                // 2. 检查CFG长度字段位置
+                                qint64 cfgLenPos = PKG_HEAD + FILE_BLOCK_HEAD + m_hdrLen;
+
+                                if (m_cfgLen == 0 && m_hdrLen > 0 && curPos >= cfgLenPos + FILE_BLOCK_HEAD) {
+                                    int pos = cfgLenPos;
+                                    quint8 type = quint8(m_filePackageCache[pos++]);
+                                    // 无论是否正确，都打印标志位
+                                    qDebug() << "[feedRawData-进度] CFG类型标志: 0x" << QString::number(type, 16).toUpper();
+
+                                    if (type == 0x02) {
+                                        m_cfgLen  = quint8(m_filePackageCache[pos++]);
+                                        m_cfgLen |= quint8(m_filePackageCache[pos++]) << 8;
+                                        m_cfgLen |= quint8(m_filePackageCache[pos++]) << 16;
+                                        m_cfgLen |= quint8(m_filePackageCache[pos++]) << 24;
+
+                                        // CFG内容起始位置 = HDR块结束 + CFG块头
+                                        qint64 cfgDataStart = cfgLenPos + FILE_BLOCK_HEAD;
+                                        qint64 cfgBlockEnd  = cfgDataStart + m_cfgLen;
+                                        qDebug() << "[feedRawData-文件结构] CFG文件 → 内容起始偏移:" << cfgDataStart
+                                                 << " 内容长度:" << m_cfgLen<< "字节"
+                                                 << " 整个CFG块结束位置:" << cfgBlockEnd;
+                                    } else {
+                                        qDebug() << "[feedRawData-进度] CFG类型标志异常，期望 0x02，跳过长度解析";
+                                    }
+                                }
+
+                                // 3. 检查DAT长度字段位置
+                                qint64 datLenPos = PKG_HEAD + 2 * FILE_BLOCK_HEAD + m_hdrLen + m_cfgLen;
+                                if (m_datLen == 0 && m_cfgLen > 0 && curPos >= datLenPos + FILE_BLOCK_HEAD) {
+                                    int pos = datLenPos;
+                                    quint8 type = quint8(m_filePackageCache[pos++]);
+                                    // 无论是否正确，都打印标志位
+                                    qDebug() << "[feedRawData-进度] DAT类型标志: 0x" << QString::number(type, 16).toUpper();
+
+                                    if (type == 0x03) {
+                                        m_datLen  = quint8(m_filePackageCache[pos++]);
+                                        m_datLen |= quint8(m_filePackageCache[pos++]) << 8;
+                                        m_datLen |= quint8(m_filePackageCache[pos++]) << 16;
+                                        m_datLen |= quint8(m_filePackageCache[pos++]) << 24;
+
+                                        // DAT内容起始位置 = CFG块结束 + DAT块头
+                                                    qint64 datDataStart = datLenPos + FILE_BLOCK_HEAD;
+                                                    qint64 totalPkgSize = datDataStart + m_datLen;
+                                                    qDebug() << "[feedRawData-文件结构] DAT文件 → 内容起始偏移:" << datDataStart
+                                                             << " 内容长度:" << m_datLen<< "字节"
+                                                             << " dat结束位置:" << totalPkgSize;
+                                    } else {
+                                        qDebug() << "[feedRawData-进度] DAT类型标志异常，期望 0x03，跳过长度解析";
+                                    }
+                                }
+
+
+
+
+
 
                             // 2. 分阶段计算总进度（每个文件各占1/3权重）
                             if (curPos <= PKG_HEAD) {
@@ -680,17 +755,18 @@ qDebug() << "[ASDU14] 进入分支，下载状态：" << m_isFileDownloading;
                         // 5. 判断ACD位，是否还有后续帧
                         uchar ctrl = quint8(frame.at(4));
                         bool hasMore = (ctrl & 0x20) != 0;
-                        qDebug() << "[ASDU14] 控制域:" << QString::number(ctrl, 16)
+                        qDebug() << "[feedRawData-ASDU14] 控制域:" << QString::number(ctrl, 16)
                                  << "ACD位:" << (hasMore ? "1(还有后续)" : "0(传输结束)");
 
                         if (!hasMore) {
                             // 传输完成：解析拆分三个COMTRADE文件
-                            qDebug() << "[ASDU14] 进入传输完成分支，总缓存大小:" << m_filePackageCache.size();
+                            qDebug() << "[feedRawData-ASDU14] 进入传输完成分支，总缓存大小:" << m_filePackageCache.size();
                             QByteArray hdr, cfg, dat;
                             bool parseOk = parseComtradePackage(m_filePackageCache, hdr, cfg, dat);
 
                             m_isFileDownloading = false;
-                            m_fileDownloadTimer->stop();
+                            qDebug() << "[feedRawData-状态重置] 触发位置：传输完成!!!!!!!!!!!!!!!!!!!!!!!!!!!";
+                            //m_fileDownloadTimer->stop();
                             m_pollTimer->start(); // 恢复二级轮询
 
                             quint32 total = m_filePackageCache.size();
@@ -699,7 +775,7 @@ qDebug() << "[ASDU14] 进入分支，下载状态：" << m_isFileDownloading;
                             if (parseOk) {
                                 emit waveDownloadFinished(m_downloadFileName, hdr, cfg, dat);
                             } else {
-                                emit waveDownloadError("文件包解析失败，格式不符合规约");
+                                emit waveDownloadError("feedRawData-文件包解析失败，格式不符合规约");
                             }
                         }
 
