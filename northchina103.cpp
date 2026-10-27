@@ -559,7 +559,12 @@ void NorthChina103::feedRawData(const QByteArray &data)
 
                 }
                 else if (asduType == 0x0E) {
+
 qDebug() << "[feedRawData-ASDU14] m_isFileDownloading：" << m_isFileDownloading;
+
+  qDebug() << "--3333333333333333333333333333333333333333333333333333333333-";
+  qDebug() << "[ASDU14] 进入分支，下载状态：" << m_isFileDownloading;
+
                     // 文件数据逻辑
                     if (!m_isFileDownloading) break;
   qDebug() << "[feedRawData-ASDU14] m_isFileDownloading==true";
