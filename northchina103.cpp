@@ -3,6 +3,7 @@
 #include <QDate>
 #include <QTime>
 #include <QTimer>
+#include <QStringList>
 #include <cstring>
 
 /* ============================================================
@@ -811,53 +812,465 @@ void NorthChina103::requestLevel1Data()
 /* ============================================================
  * 报文解析展示（只读，不改发送字节）
  * ============================================================ */
+namespace {
+
+QString hexByteText(quint8 v)
+{
+    return QString("%1").arg(v, 2, 16, QChar('0')).toUpper();
+}
+
+QString hexWordText(quint16 v)
+{
+    return QString("%1").arg(v, 4, 16, QChar('0')).toUpper();
+}
+
+// 字节区间转十六进制文本；超过 8 字节只列出前 8 个，避免单行过长
+QString hexRangeText(const QByteArray &frame, int pos, int count)
+{
+    if (pos < 0 || count <= 0 || pos + count > frame.size()) {
+        return QString();
+    }
+    QByteArray part = frame.mid(pos, count);
+    if (count > 8) {
+        part = part.left(8);
+        return part.toHex(' ').toUpper() + QStringLiteral(" …");
+    }
+    return part.toHex(' ').toUpper();
+}
+
+quint32 readU32LE(const QByteArray &data, int pos)
+{
+    return quint32(quint8(data.at(pos)))
+         | (quint32(quint8(data.at(pos + 1))) << 8)
+         | (quint32(quint8(data.at(pos + 2))) << 16)
+         | (quint32(quint8(data.at(pos + 3))));
+}
+
+QString ctrlNameText(quint8 ctrl)
+{
+    switch (ctrl) {
+    case 0x08: return QStringLiteral("召唤录波列表（FCB=0）");
+    case 0x28: return QStringLiteral("召唤录波列表（FCB=1）");
+    case 0x40: return QStringLiteral("复位通信单元");
+    case 0x60: return QStringLiteral("复位通信单元（FCB=1）");
+    case 0x47: return QStringLiteral("复位帧计数位（FCB=0）");
+    case 0x67: return QStringLiteral("复位帧计数位（FCB=1）/ 装置对时");
+    case 0x5A: return QStringLiteral("召唤一级数据（FCB=0）");
+    case 0x7A: return QStringLiteral("召唤一级数据（FCB=1）");
+    case 0x5B: return QStringLiteral("召唤二级数据（FCB=0）");
+    case 0x7B: return QStringLiteral("召唤二级数据（FCB=1）");
+    case 0x68: return QStringLiteral("信号复归");
+    default:   return QString();
+    }
+}
+
+QString ctrlText(quint8 ctrl)
+{
+    QString text = QString("二进制 %1：bit7=%2 bit6=%3 bit5(FCB/ACD)=%4 bit4=%5 功能码=0x%6")
+                       .arg(QString::number(ctrl, 2).rightJustified(8, QChar('0')))
+                       .arg((ctrl >> 7) & 1)
+                       .arg((ctrl >> 6) & 1)
+                       .arg((ctrl >> 5) & 1)
+                       .arg((ctrl >> 4) & 1)
+                       .arg(hexByteText(quint8(ctrl & 0x0F)));
+    const QString name = ctrlNameText(ctrl);
+    if (!name.isEmpty()) {
+        text += QString("（%1）").arg(name);
+    }
+    return text;
+}
+
+QString asduCotName(quint8 cause)
+{
+    switch (cause) {
+    case 0x00: return QStringLiteral("未定义");
+    case 0x01: return QStringLiteral("周期/循环");
+    case 0x02: return QStringLiteral("背景扫描");
+    case 0x03: return QStringLiteral("突发");
+    case 0x04: return QStringLiteral("初始化");
+    case 0x05: return QStringLiteral("请求或被请求");
+    case 0x06: return QStringLiteral("激活");
+    case 0x07: return QStringLiteral("激活确认");
+    case 0x08: return QStringLiteral("停止激活");
+    case 0x09: return QStringLiteral("停止激活确认");
+    case 0x0A: return QStringLiteral("激活终止");
+    case 0x14: return QStringLiteral("响应站召唤");
+    default:   return QStringLiteral("未知传送原因");
+    }
+}
+
+QString asduTypeName(quint8 typ)
+{
+    switch (typ) {
+    case 0x01: return QStringLiteral("ASDU1 带时标的报文");
+    case 0x02: return QStringLiteral("ASDU2 带相对时间的报文");
+    case 0x03: return QStringLiteral("ASDU3 被测值 I");
+    case 0x04: return QStringLiteral("ASDU4 被测值 II");
+    case 0x05: return QStringLiteral("ASDU5 标识");
+    case 0x06: return QStringLiteral("ASDU6 时间同步");
+    case 0x07: return QStringLiteral("ASDU7 总召唤启动");
+    case 0x08: return QStringLiteral("ASDU8 总召唤终止");
+    case 0x09: return QStringLiteral("ASDU9 被测值 II 带时标");
+    case 0x0A: return QStringLiteral("ASDU10 通用分类数据");
+    case 0x0B: return QStringLiteral("ASDU11 通用分类标识");
+    case 0x0C: return QStringLiteral("ASDU12 通用分类命令");
+    case 0x0D: return QStringLiteral("ASDU13 请求录波文件");
+    case 0x0E: return QStringLiteral("ASDU14 文件分段数据");
+    case 0x0F: return QStringLiteral("ASDU15 召唤录波文件列表");
+    case 0x10: return QStringLiteral("ASDU16 录波文件列表应答");
+    case 0x64: return QStringLiteral("总召唤（本项目硬编码帧）");
+    default:   return QStringLiteral("未定义的 ASDU 类型");
+    }
+}
+
+} // namespace
+
 ProtocolParseResult NorthChina103::parseFrame(const QByteArray &frame)
 {
     ProtocolParseResult res;
-    res.ok = true;
     res.rawHex = frame.toHex(' ').toUpper();
 
+    if (frame.isEmpty()) {
+        res.detailDesc = QStringLiteral("报文为空");
+        return res;
+    }
     if (frame.size() < 5) {
-        res.detailDesc = "报文长度不足";
+        res.detailDesc = QString("报文长度 %1 字节，不足一帧的最小长度（5 字节）").arg(frame.size());
         return res;
     }
 
-    const quint8 head = quint8(frame.at(0));
+    // 每个字段一行：偏移 | 字节 | 字段名 | 说明
+    QStringList detail;
+    auto addRow = [&detail](int pos, const QString &bytes, const QString &name, const QString &note) {
+        QString line = QString("[%1] %2  %3")
+                           .arg(QString::number(pos).rightJustified(2, QChar('0')),
+                                bytes.leftJustified(21, QChar(' ')),
+                                name);
+        if (!note.isEmpty()) {
+            line += QString("：") + note;
+        }
+        detail << line;
+    };
 
-    // ---------- 固定长度帧（5 字节） ----------
-    if (head == H103_START_FIXED && frame.size() == 5) {
+    const quint8 startByte = quint8(frame.at(0));
+    const quint8 endByte = quint8(frame.at(frame.size() - 1));
+
+    auto cp56Text = [this](const H103Cp56Time2a &t) -> QString {
+        const quint16 ms = quint16(t.msL) | (quint16(t.msH) << 8);
+        const QDateTime dt = cp56ToDateTime(t);
+        if (dt.isValid()) {
+            return QString("%1（星期%2，毫秒值 %3）")
+                .arg(dt.toString("yyyy-MM-dd hh:mm:ss.zzz"))
+                .arg(t.dayAndWeek >> 5)
+                .arg(ms);
+        }
+        return QString("非法时间：分=%1 时=%2 日=%3 星期=%4 月=%5 年=%6 毫秒=%7")
+            .arg(t.minute & 0x3F).arg(t.hour & 0x1F).arg(t.dayAndWeek & 0x1F)
+            .arg(t.dayAndWeek >> 5).arg(t.month & 0x0F).arg(2000 + (t.year & 0x7F))
+            .arg(ms);
+    };
+
+    // ================= 固定长度帧：10 | 控制域 | 地址域 | 校验和 | 16 =================
+    if (startByte == H103_START_FIXED) {
+        if (frame.size() != 5) {
+            res.detailDesc = QString("首字节为固定帧启动符 0x10，但帧长 %1 字节，与固定帧结构（5 字节）不符")
+                                 .arg(frame.size());
+            return res;
+        }
+
         H103FixedFrame f = {};
-        readStructAt(frame, 0, f);
+        if (!readStructAt(frame, 0, f)) {
+            res.detailDesc = QStringLiteral("固定帧结构读取失败");
+            return res;
+        }
+        const quint8 calcCs = quint8(f.ctrl ^ f.addr);
 
-        res.fieldList << qMakePair(QStringLiteral("启动符"), QString("%1").arg(f.start, 2, 16, QChar('0')));
-        res.fieldList << qMakePair(QStringLiteral("控制域"), QString("%1").arg(f.ctrl, 2, 16, QChar('0')));
-        res.fieldList << qMakePair(QStringLiteral("地址域"), QString("%1").arg(f.addr, 2, 16, QChar('0')));
-        res.fieldList << qMakePair(QStringLiteral("校验和"), QString("%1").arg(f.cs, 2, 16, QChar('0')));
-        res.fieldList << qMakePair(QStringLiteral("结束符"), QString("%1").arg(f.end, 2, 16, QChar('0')));
-        res.detailDesc = "华北103 固定长度帧";
+        addRow(0, hexByteText(f.start), QStringLiteral("启动符"),
+               f.start == H103_START_FIXED ? QStringLiteral("固定长度帧启动符 0x10")
+                                            : QStringLiteral("应为 0x10"));
+        addRow(1, hexByteText(f.ctrl), QStringLiteral("控制域"), ctrlText(f.ctrl));
+        addRow(2, hexByteText(f.addr), QStringLiteral("地址域"),
+               QString("装置地址 %1").arg(f.addr));
+        addRow(3, hexByteText(f.cs), QStringLiteral("校验和"),
+               QString("计算值 = 控制域 ^ 地址域 = %1，%2")
+                   .arg(hexByteText(calcCs),
+                        f.cs == calcCs ? QStringLiteral("校验正确") : QStringLiteral("校验错误")));
+        addRow(4, hexByteText(f.end), QStringLiteral("结束符"),
+               f.end == H103_END ? QStringLiteral("固定值 0x16") : QStringLiteral("应为 0x16"));
+
+        res.fieldList << qMakePair(QStringLiteral("启动符"), hexByteText(f.start))
+                      << qMakePair(QStringLiteral("控制域"), hexByteText(f.ctrl))
+                      << qMakePair(QStringLiteral("地址域"), hexByteText(f.addr))
+                      << qMakePair(QStringLiteral("校验和"), hexByteText(f.cs))
+                      << qMakePair(QStringLiteral("结束符"), hexByteText(f.end));
+
+        res.ok = (f.start == H103_START_FIXED && f.end == H103_END && f.cs == calcCs);
+        res.detailDesc = (res.ok ? QString()
+                                 : QStringLiteral("注意：启动符 / 结束符 / 校验和存在异常\n"))
+                         + detail.join(QChar('\n'));
         return res;
     }
 
-    // ---------- 可变长度帧（68 开头） ----------
-    if (head == H103_START_VAR && frame.size() >= VAR_HEAD_LEN) {
-        H103VariableFrameHeader h = {};
-        readStructAt(frame, 0, h);
-
-        const quint8 cs = quint8(frame.at(frame.size() - 2));
-        const quint8 tail = quint8(frame.at(frame.size() - 1));
-
-        res.fieldList << qMakePair(QStringLiteral("启动符"), QString("%1").arg(h.start1, 2, 16, QChar('0')));
-        res.fieldList << qMakePair(QStringLiteral("长度低"), QString("%1").arg(h.lenL, 2, 16, QChar('0')));
-        res.fieldList << qMakePair(QStringLiteral("长度高"), QString("%1").arg(h.lenH, 2, 16, QChar('0')));
-        res.fieldList << qMakePair(QStringLiteral("控制域"), QString("%1").arg(h.ctrl, 2, 16, QChar('0')));
-        res.fieldList << qMakePair(QStringLiteral("地址域"), QString("%1").arg(h.addr, 2, 16, QChar('0')));
-        res.fieldList << qMakePair(QStringLiteral("校验和"), QString("%1").arg(cs, 2, 16, QChar('0')));
-        res.fieldList << qMakePair(QStringLiteral("结束符"), QString("%1").arg(tail, 2, 16, QChar('0')));
-        res.detailDesc = "华北103 可变长度帧";
+    // ========== 可变长度帧：68 | 长度低 | 长度高 | 68 | 控制域 | 地址域 | ASDU | 校验和 | 16 ==========
+    if (startByte != H103_START_VAR) {
+        res.detailDesc = QString("非华北103帧：首字节 %1 既不是固定帧启动符 0x10，也不是可变帧启动符 0x68")
+                             .arg(hexByteText(startByte));
+        return res;
+    }
+    if (frame.size() < VAR_HEAD_LEN + 2) {
+        res.detailDesc = QString("可变帧长度 %1 字节，不足帧头 6 字节 + 校验 1 字节 + 结束符 1 字节")
+                             .arg(frame.size());
         return res;
     }
 
-    res.detailDesc = "非标准103帧格式";
+    H103VariableFrameHeader h = {};
+    if (!readStructAt(frame, 0, h)) {
+        res.detailDesc = QStringLiteral("可变帧帧头读取失败");
+        return res;
+    }
+
+    const quint16 lenValue = quint16(h.lenL) | (quint16(h.lenH) << 8);
+    const int csPos = frame.size() - 2;
+    const quint8 csActual = quint8(frame.at(csPos));
+    const bool lenMatch = (int(VAR_HEAD_LEN - 2) + int(lenValue) + 2 == frame.size());
+    const int asduStart = VAR_HEAD_LEN;
+    const int bodyLen = csPos - asduStart;
+
+    // 校验和：从控制域（偏移 4）起累加“长度值”个字节；长度域异常时按实际字节退化为累加
+    quint8 calcCs = 0;
+    const int sumBegin = VAR_HEAD_LEN - 2;
+    const int sumEnd = qMin(csPos, sumBegin + int(lenValue));
+    for (int i = sumBegin; i < sumEnd; ++i) {
+        calcCs = quint8(calcCs + quint8(frame.at(i)));
+    }
+    const bool csOk = (sumEnd == sumBegin + int(lenValue)) && (csActual == calcCs);
+
+    addRow(0, hexByteText(h.start1), QStringLiteral("启动符"),
+           QStringLiteral("可变长度帧启动符 0x68"));
+    addRow(1, hexByteText(h.lenL), QStringLiteral("长度低字节"),
+           QString("长度值低 8 位，长度值 = 0x%1 = %2")
+               .arg(hexWordText(lenValue))
+               .arg(lenValue));
+    addRow(2, hexByteText(h.lenH), QStringLiteral("长度高字节"),
+           QStringLiteral("长度值高 8 位；长度值 = 控制域 1 + 地址域 1 + ASDU 长度"));
+    addRow(3, hexByteText(h.start2), QStringLiteral("第二启动符"),
+           h.start2 == H103_START_VAR ? QStringLiteral("固定值 0x68")
+                                      : QStringLiteral("应为 0x68，该字节异常"));
+    addRow(4, hexByteText(h.ctrl), QStringLiteral("控制域"), ctrlText(h.ctrl));
+    addRow(5, hexByteText(h.addr), QStringLiteral("地址域"),
+           QString("装置地址 %1").arg(h.addr));
+
+    res.fieldList << qMakePair(QStringLiteral("启动符"), hexByteText(h.start1))
+                  << qMakePair(QStringLiteral("长度"),
+                               QString("0x%1(%2字节)").arg(hexWordText(lenValue)).arg(lenValue))
+                  << qMakePair(QStringLiteral("控制域"), hexByteText(h.ctrl))
+                  << qMakePair(QStringLiteral("地址域"), hexByteText(h.addr));
+
+    // ---------- ASDU ----------
+    if (bodyLen > 0) {
+        const quint8 typ = quint8(frame.at(asduStart));
+
+        auto addCommonHeader = [&](bool withFunInf) {
+            addRow(asduStart, hexByteText(typ), QStringLiteral("类型标识 TYP"), asduTypeName(typ));
+
+            const quint8 vsq = quint8(frame.at(asduStart + 1));
+            addRow(asduStart + 1, hexByteText(vsq), QStringLiteral("可变结构限定词 VSQ"),
+                   QString("SQ=%1，信息数目=%2").arg((vsq >> 7) & 1).arg(vsq & 0x7F));
+
+            const quint8 cot = quint8(frame.at(asduStart + 2));
+            addRow(asduStart + 2, hexByteText(cot), QStringLiteral("传送原因 COT"),
+                   QString("P/N=%1，原因 0x%2（%3）")
+                       .arg((cot >> 6) & 1)
+                       .arg(hexByteText(quint8(cot & 0x3F)))
+                       .arg(asduCotName(quint8(cot & 0x3F))));
+
+            addRow(asduStart + 3, hexByteText(quint8(frame.at(asduStart + 3))),
+                   QStringLiteral("ASDU 公共地址"), QStringLiteral("装置地址"));
+
+            if (withFunInf) {
+                addRow(asduStart + 4, hexByteText(quint8(frame.at(asduStart + 4))),
+                       QStringLiteral("功能码 FUN"), QStringLiteral("本项目固定填 0xFF"));
+                addRow(asduStart + 5, hexByteText(quint8(frame.at(asduStart + 5))),
+                       QStringLiteral("信息序号 INF"), QStringLiteral("本项目固定填 0x00"));
+            }
+
+            res.fieldList << qMakePair(QStringLiteral("TYP"),
+                                       QString("%1（%2）").arg(hexByteText(typ), asduTypeName(typ)));
+        };
+
+        if (typ == ASDU_FILE_DATA) {
+            // ASDU14 只有 4 字节公共前缀 + 4 字节偏移
+            if (bodyLen < 8) {
+                detail << QString("ASDU14 数据长度 %1 字节，不足 8 字节（4 字节前缀 + 4 字节偏移）").arg(bodyLen);
+            } else {
+                addRow(asduStart, hexByteText(typ), QStringLiteral("类型标识 TYP"), asduTypeName(typ));
+                const quint8 vsq = quint8(frame.at(asduStart + 1));
+                addRow(asduStart + 1, hexByteText(vsq), QStringLiteral("可变结构限定词 VSQ"),
+                       QString("SQ=%1，信息数目=%2").arg((vsq >> 7) & 1).arg(vsq & 0x7F));
+                const quint8 cot = quint8(frame.at(asduStart + 2));
+                addRow(asduStart + 2, hexByteText(cot), QStringLiteral("传送原因 COT"),
+                       QString("P/N=%1，原因 0x%2（%3）")
+                           .arg((cot >> 6) & 1)
+                           .arg(hexByteText(quint8(cot & 0x3F)))
+                           .arg(asduCotName(quint8(cot & 0x3F))));
+                addRow(asduStart + 3, hexByteText(quint8(frame.at(asduStart + 3))),
+                       QStringLiteral("ASDU 公共地址"), QStringLiteral("装置地址"));
+
+                const quint32 offset = readU32LE(frame, asduStart + 4);
+                addRow(asduStart + 4, hexRangeText(frame, asduStart + 4, 4),
+                       QStringLiteral("本段起始偏移（4 字节小端）"),
+                       QString("偏移 %1，本段为文件从该位置起的数据").arg(offset));
+
+                res.fieldList << qMakePair(QStringLiteral("TYP"),
+                                           QString("%1（%2）").arg(hexByteText(typ), asduTypeName(typ)))
+                              << qMakePair(QStringLiteral("本段偏移"), QString::number(offset));
+            }
+        } else if (typ == ASDU_WAVE_LIST_ACK) {
+            // ASDU16：20 字节自定义头 + 若干个 48 字节条目
+            if (bodyLen < int(sizeof(H103AsduWaveListHead))) {
+                detail << QString("ASDU16 数据长度 %1 字节，不足 20 字节头部").arg(bodyLen);
+            } else {
+                H103AsduWaveListHead head = {};
+                readStructAt(frame, asduStart, head);
+
+                addRow(asduStart, hexByteText(head.typ), QStringLiteral("类型标识 TYP"), asduTypeName(head.typ));
+                addRow(asduStart + 1, hexByteText(head.vsq), QStringLiteral("可变结构限定词 VSQ"),
+                       QString("SQ=%1，信息数目=%2").arg((head.vsq >> 7) & 1).arg(head.vsq & 0x7F));
+                addRow(asduStart + 2, hexByteText(head.cot), QStringLiteral("传送原因 COT"),
+                       QString("P/N=%1，原因 0x%2（%3）")
+                           .arg((head.cot >> 6) & 1)
+                           .arg(hexByteText(quint8(head.cot & 0x3F)))
+                           .arg(asduCotName(quint8(head.cot & 0x3F))));
+                addRow(asduStart + 3, hexByteText(head.asduAddr), QStringLiteral("ASDU 公共地址"),
+                       QStringLiteral("装置地址"));
+                addRow(asduStart + 4, hexRangeText(frame, asduStart + 4, 2),
+                       QStringLiteral("本帧文件数（2 字节小端）"), QString::number(head.fileCount));
+                addRow(asduStart + 6, hexRangeText(frame, asduStart + 6, 14),
+                       QStringLiteral("保留（14 字节）"), QStringLiteral("本程序未使用，保持原偏移"));
+
+                res.fieldList << qMakePair(QStringLiteral("TYP"),
+                                           QString("%1（%2）").arg(hexByteText(head.typ), asduTypeName(head.typ)))
+                              << qMakePair(QStringLiteral("本帧文件数"), QString::number(head.fileCount));
+
+                int itemPos = asduStart + int(sizeof(H103AsduWaveListHead));
+                for (quint16 i = 0; i < head.fileCount; ++i) {
+                    if (itemPos + int(sizeof(H103WaveFileItem)) > csPos) {
+                        detail << QString("…… 第 %1 个文件条目数据不足（需要 48 字节），后续未展开").arg(i + 1);
+                        break;
+                    }
+                    H103WaveFileItem item = {};
+                    readStructAt(frame, itemPos, item);
+
+                    QByteArray nameBytes = QByteArray(reinterpret_cast<const char *>(item.name), 40);
+                    const int zero = nameBytes.indexOf('\0');
+                    if (zero >= 0) {
+                        nameBytes.truncate(zero);
+                    }
+
+                    detail << QString("第 %1 个文件条目（偏移 %2，共 48 字节）：").arg(i + 1).arg(itemPos);
+                    addRow(itemPos, hexByteText(item.deviceAddr), QStringLiteral("装置地址"),
+                           QString::number(item.deviceAddr));
+                    addRow(itemPos + 1, hexRangeText(frame, itemPos + 1, 40),
+                           QStringLiteral("文件名（40 字节）"), QString::fromLatin1(nameBytes));
+                    addRow(itemPos + 41, hexRangeText(frame, itemPos + 41, 7),
+                           QStringLiteral("故障时间 CP56Time2a"), cp56Text(item.faultTime));
+                    itemPos += int(sizeof(H103WaveFileItem));
+                }
+            }
+        } else {
+            // ASDU15 / ASDU13 / 总召唤 / 其它带 6 字节公共头的类型
+            if (bodyLen < 6) {
+                detail << QString("ASDU 数据长度 %1 字节，不足 6 字节公共头").arg(bodyLen);
+            } else {
+                addCommonHeader(true);
+
+                if (typ == ASDU_WAVE_LIST_REQ) {
+                    if (bodyLen < 20) {
+                        detail << QString("ASDU15 数据长度 %1 字节，不足 20 字节").arg(bodyLen);
+                    } else {
+                        H103Cp56Time2a t1 = {};
+                        H103Cp56Time2a t2 = {};
+                        readStructAt(frame, asduStart + 6, t1);
+                        readStructAt(frame, asduStart + 13, t2);
+
+                        addRow(asduStart + 6, hexRangeText(frame, asduStart + 6, 7),
+                               QStringLiteral("起始时间 CP56Time2a"), cp56Text(t1));
+                        addRow(asduStart + 13, hexRangeText(frame, asduStart + 13, 7),
+                               QStringLiteral("结束时间 CP56Time2a"), cp56Text(t2));
+
+                        res.fieldList << qMakePair(QStringLiteral("起始时间"), cp56Text(t1))
+                                      << qMakePair(QStringLiteral("结束时间"), cp56Text(t2));
+                    }
+                } else if (typ == ASDU_FILE_REQUEST) {
+                    if (bodyLen < 50) {
+                        detail << QString("ASDU13 数据长度 %1 字节，不足 50 字节").arg(bodyLen);
+                    } else {
+                        QByteArray nameBytes = frame.mid(asduStart + 6, 40);
+                        const int zero = nameBytes.indexOf('\0');
+                        if (zero >= 0) {
+                            nameBytes.truncate(zero);
+                        }
+                        const quint32 offset = readU32LE(frame, asduStart + 46);
+
+                        addRow(asduStart + 6, hexRangeText(frame, asduStart + 6, 40),
+                               QStringLiteral("文件名（40 字节）"), QString::fromLatin1(nameBytes));
+                        addRow(asduStart + 46, hexRangeText(frame, asduStart + 46, 4),
+                               QStringLiteral("请求起始偏移（4 字节小端）"), QString::number(offset));
+
+                        res.fieldList << qMakePair(QStringLiteral("文件名"), QString::fromLatin1(nameBytes))
+                                      << qMakePair(QStringLiteral("起始偏移"), QString::number(offset));
+                    }
+                } else if (typ == ASDU_GENERAL_INTERROGATION) {
+                    if (bodyLen < 7) {
+                        detail << QString("总召唤数据长度 %1 字节，缺少 QOI").arg(bodyLen);
+                    } else {
+                        const quint8 qoi = quint8(frame.at(asduStart + 6));
+                        addRow(asduStart + 6, hexByteText(qoi), QStringLiteral("QOI 限定词"),
+                               QString("总召唤限定词 0x%1").arg(hexByteText(qoi)));
+                        res.fieldList << qMakePair(QStringLiteral("QOI"), hexByteText(qoi));
+                    }
+                } else if (bodyLen > 6) {
+                    addRow(asduStart + 6, hexRangeText(frame, asduStart + 6, bodyLen - 6),
+                           QStringLiteral("ASDU 数据"), QStringLiteral("该类型未做字段展开"));
+                }
+            }
+        }
+    } else {
+        detail << QStringLiteral("长度域/帧长异常：报文在帧头之后没有 ASDU 数据");
+    }
+
+    // ---------- 校验和与结束符 ----------
+    QString csNote;
+    if (sumEnd != sumBegin + int(lenValue)) {
+        csNote = QString("长度域异常，无法按长度域校验；按实际字节（偏移 %1~%2）累加得 0x%3，报文校验和为 0x%4")
+                     .arg(sumBegin).arg(sumEnd - 1)
+                     .arg(hexByteText(calcCs), hexByteText(csActual));
+    } else {
+        csNote = QString("从偏移 %1（控制域起）累加 %2 个字节得 0x%3，%4")
+                     .arg(sumBegin).arg(lenValue).arg(hexByteText(calcCs),
+                         csActual == calcCs ? QStringLiteral("校验正确") : QStringLiteral("校验错误"));
+    }
+    addRow(csPos, hexByteText(csActual), QStringLiteral("校验和"), csNote);
+    addRow(csPos + 1, hexByteText(endByte), QStringLiteral("结束符"),
+           endByte == H103_END ? QStringLiteral("固定值 0x16") : QStringLiteral("应为 0x16"));
+
+    res.fieldList << qMakePair(QStringLiteral("校验和"), hexByteText(csActual))
+                  << qMakePair(QStringLiteral("结束符"), hexByteText(endByte));
+
+    if (!lenMatch) {
+        detail << QString("注意：长度域值 %1（0x%2）与实际帧长不符：按长度域应为 %3 字节，实际 %4 字节%5")
+                      .arg(lenValue).arg(hexWordText(lenValue))
+                      .arg(int(VAR_HEAD_LEN - 2) + int(lenValue) + 2).arg(frame.size())
+                      .arg(quint8(frame.at(asduStart)) == ASDU_GENERAL_INTERROGATION
+                               ? QStringLiteral("；本项目总召唤报文长度域硬编码为 09 09，属既有现象")
+                               : QString());
+    }
+
+    res.ok = (h.start2 == H103_START_VAR && endByte == H103_END && lenMatch && csOk);
+    if (!res.ok) {
+        detail.prepend(QStringLiteral("注意：报文结构 / 校验存在异常（见下方标注）"));
+    }
+    res.detailDesc = detail.join(QChar('\n'));
     return res;
 }
 

@@ -5,7 +5,7 @@
 int main(int argc, char *argv[])
 {
 
-    // 注册自定义类型，必须放在QApplication构造之前
+    // 注册自定义类型，必须放在QApplication构造之前trae-1
     qRegisterMetaType<WaveFileInfo>("WaveFileInfo");
     qRegisterMetaType<QList<WaveFileInfo>>("QList<WaveFileInfo>");
 
