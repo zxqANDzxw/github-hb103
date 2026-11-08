@@ -28,6 +28,7 @@ SOURCES += \
 
 HEADERS += \
     ProtocolDefine.h \
+    h103frames.h \
     adddevicedialog.h \
     iprotocol.h \
     mainwindow.h \

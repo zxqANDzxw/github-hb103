@@ -1,0 +1,6 @@
+CompileFlags:
+  Add: [-target, i686-w64-mingw32]
+
+Diagnostics:
+  # MinGW 5.3 的 intrin.h 会把 __rdtsc 当成普通函数声明，clang 判定与内建函数冲突
+  Suppress: [builtin_definition]

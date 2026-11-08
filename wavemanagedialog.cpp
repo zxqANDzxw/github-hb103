@@ -7,16 +7,20 @@
 #include <QPlainTextEdit>
 #include <QDateTime>
 #include <QDir>
+#include <QHeaderView>
+#include <QFile>
+#include <QProcess>
+#include <QStringList>
+#include <QCoreApplication>
 
 WaveManageDialog::WaveManageDialog(QWidget *parent,TcpClient *tcp,IProtocol *proto,QPlainTextEdit *logEdit) :
-    QDialog(parent),
+    QWidget(parent),
     ui(new Ui::WaveManageDialog),
     m_tcp(tcp),
     m_proto(proto),
     m_logEdit(logEdit)
 {
     ui->setupUi(this);
-    setWindowTitle("录波文件管理");
 
     // 初始化默认时间
         QDateTime now = QDateTime::currentDateTime();
@@ -26,7 +30,9 @@ WaveManageDialog::WaveManageDialog(QWidget *parent,TcpClient *tcp,IProtocol *pro
         // 初始化表格
         ui->tableWidget->setColumnCount(3);
         ui->tableWidget->setHorizontalHeaderLabels({"故障时间", "录波文件名", "操作"});
-        ui->tableWidget->horizontalHeader()->setStretchLastSection(true);
+        // 列宽按内容自适应，同时允许拖动表头分隔线手动调整
+        ui->tableWidget->horizontalHeader()->setStretchLastSection(false);
+        ui->tableWidget->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
 
         // 连接规约层的录波列表信号
         connect(m_proto, &IProtocol::waveListReceived,
@@ -182,6 +188,24 @@ void WaveManageDialog::onWaveListReceived(const QList<WaveFileInfo> &waveList)
             onDeleteFile(info.fileName, row);
         });
     }
+
+    autoFitColumns();
+}
+
+// 列宽按内容自适应（之后仍可拖动表头分隔线手动调整）
+void WaveManageDialog::autoFitColumns()
+{
+    ui->tableWidget->resizeColumnsToContents();
+
+    // “操作”列放的是按钮组，resizeColumnsToContents 不计入 cellWidget，
+    // 这里用按钮组自身的最小宽度补足，避免按钮被裁掉
+    if (ui->tableWidget->rowCount() > 0) {
+        if (QWidget *buttons = ui->tableWidget->cellWidget(0, 2)) {
+            const int opWidth = buttons->minimumSizeHint().width() + 4;
+            ui->tableWidget->setColumnWidth(
+                2, qMax(ui->tableWidget->columnWidth(2), opWidth));
+        }
+    }
 }
 
 void WaveManageDialog::onDownloadFile(const QString &fileName, int row)
@@ -213,8 +237,31 @@ void WaveManageDialog::onDownloadFile(const QString &fileName, int row)
 
 void WaveManageDialog::onAnalyzeFile(const QString &fileName, int row)
 {
-    m_logEdit->appendPlainText(QString("【分析】打开录波分析：%1").arg(fileName));
-    // 后续接入录波分析模块
+    Q_UNUSED(row);
+
+    // 已下载的录波文件位于程序目录下的 wave_files 目录
+    const QString cfgPath = QCoreApplication::applicationDirPath()
+                            + QStringLiteral("/wave_files/") + fileName + QStringLiteral(".cfg");
+    if (!QFile::exists(cfgPath)) {
+        m_logEdit->appendPlainText(
+            QString("【分析】该文件尚未下载，请先下载：%1").arg(fileName));
+        return;
+    }
+
+    // 独立的 COMTRADE 录波分析程序与本程序放在同一目录
+    const QString viewerPath = QCoreApplication::applicationDirPath()
+                               + QStringLiteral("/comtradeviewer.exe");
+    if (!QFile::exists(viewerPath)) {
+        m_logEdit->appendPlainText(
+            QString("【分析】未找到录波分析程序：%1").arg(viewerPath));
+        return;
+    }
+
+    if (!QProcess::startDetached(viewerPath, QStringList() << cfgPath)) {
+        m_logEdit->appendPlainText(QStringLiteral("【分析】启动录波分析程序失败"));
+        return;
+    }
+    m_logEdit->appendPlainText(QString("【分析】已启动录波分析：%1").arg(fileName));
 }
 
 void WaveManageDialog::onDeleteFile(const QString &fileName, int row)
