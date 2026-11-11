@@ -50,7 +50,7 @@ ViewerWindow::ViewerWindow(QWidget *parent)
     setCentralWidget(central);
 
     connect(m_channelList, &QListWidget::itemChanged, this, &ViewerWindow::onItemChanged);
-    connect(m_waveView, &WaveformView::cursorInfo, this, [this](const QString &text){
+    connect(m_waveView, &WaveformView::selectionInfo, this, [this](const QString &text){
         if (text.isEmpty()) {
             statusBar()->clearMessage();
         } else {
@@ -73,7 +73,7 @@ ViewerWindow::ViewerWindow(QWidget *parent)
 
     m_infoLabel = new QLabel(QStringLiteral("未打开文件"), this);
     statusBar()->addPermanentWidget(m_infoLabel);
-    statusBar()->showMessage(QStringLiteral("滚轮缩放时间轴，按住左键拖动平移，双击复位"));
+    statusBar()->showMessage(QStringLiteral("左键设置 t1，右键设置 t2（状态栏显示 t2-t1）；滚轮滚动通道，Ctrl+滚轮缩放时间轴，双击复位"));
 }
 
 bool ViewerWindow::loadFile(const QString &cfgPath)
